@@ -20,7 +20,7 @@ test("Redis cooldown blocks an immediate second refresh", async () => {
 
     await assert.rejects(
       acquireCodeforcesRefreshCooldown(1_001),
-      /Codeforces refresh is on cooldown\. Try again in 60 seconds\./,
+      /Codeforces refresh is on cooldown\. Try again in 20 seconds\./,
     );
   });
 });
@@ -30,8 +30,8 @@ test("Redis cooldown returns remaining seconds", async () => {
     await acquireCodeforcesRefreshCooldown(1_000);
 
     await assert.rejects(
-      acquireCodeforcesRefreshCooldown(31_000),
-      /Try again in 30 seconds\./,
+      acquireCodeforcesRefreshCooldown(11_000),
+      /Try again in 10 seconds\./,
     );
   });
 });
@@ -39,7 +39,7 @@ test("Redis cooldown returns remaining seconds", async () => {
 test("Redis cooldown allows refreshes after the cooldown window", async () => {
   await withMockRedisCooldown(async () => {
     await acquireCodeforcesRefreshCooldown(1_000);
-    await assert.doesNotReject(acquireCodeforcesRefreshCooldown(61_000));
+    await assert.doesNotReject(acquireCodeforcesRefreshCooldown(21_000));
   });
 });
 
@@ -74,7 +74,7 @@ test("development fallback cooldown works without Redis", async () => {
       await assert.doesNotReject(acquireCodeforcesRefreshCooldown(1_000));
       await assert.rejects(
         acquireCodeforcesRefreshCooldown(1_001),
-        /Codeforces refresh is on cooldown\. Try again in 60 seconds\./,
+        /Codeforces refresh is on cooldown\. Try again in 20 seconds\./,
       );
     },
   );
@@ -261,7 +261,7 @@ class MockCooldownRedisClient {
   ) {
     assert.equal(key, "codeforces-refresh-cooldown");
     assert.equal(options.nx, true);
-    assert.equal(options.ex, 60);
+    assert.equal(options.ex, 20);
 
     const now = Number(value);
     this.lastAttemptAt = now;
