@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { RankingsView } from "@/app/components/RankingsView";
 import { parseStandingsImport } from "@/app/lib/import-standings";
 import { buildCombinedRankings, type TourResult } from "@/app/lib/rankings";
@@ -13,8 +13,17 @@ type RankingsWorkspaceProps = {
 type StandingsState = {
   tour1: TourResult[];
   tour2: TourResult[];
-  source: "mock" | "imported";
+  source: "mock" | "imported" | "codeforces";
 };
+
+type CodeforcesStandingsResponse =
+  | {
+      tour1: TourResult[];
+      tour2: TourResult[];
+    }
+  | {
+      error: string;
+    };
 
 const textAreaPlaceholder = `handle,score,penalty
 tourist,500,120
@@ -32,6 +41,8 @@ export function RankingsWorkspace({
   const [tour1Text, setTour1Text] = useState("");
   const [tour2Text, setTour2Text] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
+  const [loadingCodeforces, setLoadingCodeforces] = useState(false);
+  const activeCodeforcesRequestId = useRef(0);
 
   const rankings = useMemo(
     () =>
@@ -43,6 +54,8 @@ export function RankingsWorkspace({
   );
 
   function loadImportedStandings() {
+    invalidateCodeforcesRequest();
+
     try {
       const importedTour1 = parseTourStandings("Tour 1", tour1Text);
       const importedTour2 = parseTourStandings("Tour 2", tour2Text);
@@ -61,6 +74,8 @@ export function RankingsWorkspace({
   }
 
   function resetToMockData() {
+    invalidateCodeforcesRequest();
+
     setStandings({
       tour1: initialTour1Results,
       tour2: initialTour2Results,
@@ -69,6 +84,62 @@ export function RankingsWorkspace({
     setTour1Text("");
     setTour2Text("");
     setImportError(null);
+  }
+
+  async function loadCodeforcesStandings() {
+    const requestId = activeCodeforcesRequestId.current + 1;
+    activeCodeforcesRequestId.current = requestId;
+
+    setLoadingCodeforces(true);
+    setImportError(null);
+
+    try {
+      const response = await fetch("/api/codeforces/standings", {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as CodeforcesStandingsResponse;
+
+      if (!response.ok || "error" in payload) {
+        throw new Error(
+          "error" in payload
+            ? payload.error
+            : "Unable to load Codeforces standings.",
+        );
+      }
+
+      if (!isActiveCodeforcesRequest(requestId)) {
+        return;
+      }
+
+      setStandings({
+        tour1: payload.tour1,
+        tour2: payload.tour2,
+        source: "codeforces",
+      });
+    } catch (error) {
+      if (!isActiveCodeforcesRequest(requestId)) {
+        return;
+      }
+
+      setImportError(
+        error instanceof Error
+          ? `Codeforces: ${error.message}`
+          : "Codeforces: Unable to load standings.",
+      );
+    } finally {
+      if (isActiveCodeforcesRequest(requestId)) {
+        setLoadingCodeforces(false);
+      }
+    }
+  }
+
+  function invalidateCodeforcesRequest() {
+    activeCodeforcesRequestId.current += 1;
+    setLoadingCodeforces(false);
+  }
+
+  function isActiveCodeforcesRequest(requestId: number) {
+    return activeCodeforcesRequestId.current === requestId;
   }
 
   async function loadFile(
@@ -94,7 +165,7 @@ export function RankingsWorkspace({
   return (
     <RankingsView
       rankings={rankings}
-      sourceLabel={standings.source === "mock" ? "Mock data" : "Imported"}
+      sourceLabel={getSourceLabel(standings.source)}
     >
       <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 p-4">
@@ -134,12 +205,18 @@ export function RankingsWorkspace({
             }
           >
             {importError ??
-              `Using ${
-                standings.source === "mock" ? "mock data" : "imported standings"
-              }.`}
+              `Using ${getSourceLabel(standings.source).toLowerCase()}.`}
           </div>
 
           <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              className="h-10 rounded-md border border-sky-700 bg-sky-700 px-4 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:border-sky-300 disabled:bg-sky-300"
+              disabled={loadingCodeforces}
+              type="button"
+              onClick={loadCodeforcesStandings}
+            >
+              {loadingCodeforces ? "Loading Codeforces" : "Load from Codeforces"}
+            </button>
             <button
               className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
               type="button"
@@ -159,6 +236,18 @@ export function RankingsWorkspace({
       </section>
     </RankingsView>
   );
+}
+
+function getSourceLabel(source: StandingsState["source"]) {
+  if (source === "codeforces") {
+    return "Codeforces";
+  }
+
+  if (source === "imported") {
+    return "Imported";
+  }
+
+  return "Mock data";
 }
 
 function parseTourStandings(label: "Tour 1" | "Tour 2", text: string) {
