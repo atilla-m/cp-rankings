@@ -46,3 +46,6 @@ cf.csv
 standings*.json
 standings*.csv
 raw-codeforces*.json
+.data/
+/data/standings-snapshot.json
+/data/published-standings.json

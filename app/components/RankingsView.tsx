@@ -5,16 +5,22 @@ import type { RankedParticipant } from "@/app/lib/rankings";
 
 type RankingsViewProps = {
   children?: React.ReactNode;
+  description?: string;
   rankings: RankedParticipant[];
+  showSourceStat?: boolean;
   sourceLabel?: string;
+  title?: string;
 };
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 
 export function RankingsView({
   children,
+  description = "Tour 1 and Tour 2 official standings for live round qualification.",
   rankings,
-  sourceLabel = "Mock data",
+  showSourceStat = false,
+  sourceLabel,
+  title = "Combined rankings",
 }: RankingsViewProps) {
   const [query, setQuery] = useState("");
   const [qualifiedOnly, setQualifiedOnly] = useState(false);
@@ -41,22 +47,25 @@ export function RankingsView({
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5">
         <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-700">
-              Codeforces group
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-normal text-slate-950 sm:text-4xl">
-              Combined rankings
+            <h1 className="text-3xl font-semibold tracking-normal text-slate-950 sm:text-4xl">
+              {title}
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-              Tour 1 and Tour 2 official standings for live round qualification.
+              {description}
             </p>
           </div>
 
-          <dl className="grid grid-cols-2 gap-2 text-sm sm:min-w-96 sm:grid-cols-4">
+          <dl
+            className={`grid grid-cols-2 gap-2 text-sm sm:min-w-96 ${
+              showSourceStat ? "sm:grid-cols-4" : "sm:grid-cols-3"
+            }`}
+          >
             <Stat label="Official" value={rankings.length} />
             <Stat label="Qualified" value={qualifiedCount} />
             <Stat label="Cutoff" value="Top 20" />
-            <Stat label="Source" value={sourceLabel} />
+            {showSourceStat && sourceLabel ? (
+              <Stat label="Source" value={sourceLabel} />
+            ) : null}
           </dl>
         </header>
 

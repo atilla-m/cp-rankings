@@ -5,6 +5,7 @@ import {
   buildCodeforcesApiUrl,
   codeforcesRowsToTourResults,
   createCodeforcesApiSignature,
+  fetchContestStandings,
   type CodeforcesRanklistRow,
 } from "./codeforces-api";
 
@@ -95,6 +96,146 @@ test("filters unofficial, virtual, practice, manager, and ghost rows", () => {
   ]);
 });
 
+test("manager mode uses signed asManager request first", async () => {
+  const requestedUrls: string[] = [];
+
+  await withMockFetch(async (input) => {
+    requestedUrls.push(String(input));
+
+    return codeforcesResponse({
+      status: "OK",
+      result: {
+        rows: [makeRow("tourist", "CONTESTANT")],
+      },
+    });
+  }, async () => {
+    const standings = await fetchContestStandings(697487, {
+      asManager: true,
+      credentials: {
+        apiKey: "key",
+        apiSecret: "secret",
+      },
+    });
+
+    assert.deepEqual(standings, [
+      { handle: "tourist", score: 100, penalty: 1, official: true },
+    ]);
+  });
+
+  assert.equal(requestedUrls.length, 1);
+
+  const managerUrl = new URL(requestedUrls[0]);
+  assert.equal(managerUrl.searchParams.get("contestId"), "697487");
+  assert.equal(managerUrl.searchParams.get("showUnofficial"), "false");
+  assert.equal(managerUrl.searchParams.get("apiKey"), "key");
+  assert.equal(managerUrl.searchParams.has("apiSig"), true);
+  assert.equal(managerUrl.searchParams.get("asManager"), "true");
+});
+
+test("non-manager mode tries public request first", async () => {
+  const requestedUrls: string[] = [];
+
+  await withMockFetch(async (input) => {
+    requestedUrls.push(String(input));
+
+    return codeforcesResponse({
+      status: "OK",
+      result: {
+        rows: [makeRow("tourist", "CONTESTANT")],
+      },
+    });
+  }, async () => {
+    await fetchContestStandings(697487, {
+      asManager: false,
+      credentials: {
+        apiKey: "key",
+        apiSecret: "secret",
+      },
+    });
+  });
+
+  assert.equal(requestedUrls.length, 1);
+
+  const publicUrl = new URL(requestedUrls[0]);
+  assert.equal(publicUrl.searchParams.get("contestId"), "697487");
+  assert.equal(publicUrl.searchParams.get("showUnofficial"), "false");
+  assert.equal(publicUrl.searchParams.has("apiKey"), false);
+  assert.equal(publicUrl.searchParams.has("apiSig"), false);
+  assert.equal(publicUrl.searchParams.has("asManager"), false);
+});
+
+test("non-manager mode falls back to signed request after public failure", async () => {
+  const requestedUrls: string[] = [];
+
+  await withMockFetch(async (input) => {
+    requestedUrls.push(String(input));
+
+    if (requestedUrls.length === 1) {
+      return codeforcesResponse({
+        status: "FAILED",
+        comment: "Contest with id 697487 not found",
+      });
+    }
+
+    return codeforcesResponse({
+      status: "OK",
+      result: {
+        rows: [makeRow("tourist", "CONTESTANT")],
+      },
+    });
+  }, async () => {
+    await fetchContestStandings(697487, {
+      asManager: false,
+      credentials: {
+        apiKey: "key",
+        apiSecret: "secret",
+      },
+    });
+  });
+
+  assert.equal(requestedUrls.length, 2);
+
+  const signedUrl = new URL(requestedUrls[1]);
+  assert.equal(signedUrl.searchParams.get("apiKey"), "key");
+  assert.equal(signedUrl.searchParams.has("apiSig"), true);
+  assert.equal(signedUrl.searchParams.has("asManager"), false);
+});
+
+test("surfaces Codeforces API comments when standings fail", async () => {
+  await withMockFetch(
+    async () =>
+      codeforcesResponse({
+        status: "FAILED",
+        comment: "Contest with id 697487 not found",
+      }),
+    async () => {
+      await assert.rejects(
+        () => fetchContestStandings(697487),
+        /Contest with id 697487 not found/,
+      );
+    },
+  );
+});
+
+test("surfaces Codeforces comments from HTTP error responses", async () => {
+  await withMockFetch(
+    async () =>
+      codeforcesResponse(
+        {
+          status: "FAILED",
+          comment: "contestId: Contest with id 697487 not found",
+        },
+        400,
+      ),
+    async () => {
+      await assert.rejects(
+        () => fetchContestStandings(697487),
+        /contestId: Contest with id 697487 not found/,
+      );
+    },
+  );
+});
+
 function makeRow(handle: string, participantType: string): CodeforcesRanklistRow {
   return {
     party: {
@@ -104,4 +245,27 @@ function makeRow(handle: string, participantType: string): CodeforcesRanklistRow
     points: 100,
     penalty: 1,
   };
+}
+
+async function withMockFetch(
+  mockFetch: typeof fetch,
+  callback: () => Promise<void>,
+) {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = mockFetch;
+
+  try {
+    await callback();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+function codeforcesResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+    },
+  });
 }

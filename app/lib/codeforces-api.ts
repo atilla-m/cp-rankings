@@ -9,6 +9,11 @@ type CodeforcesApiCredentials = {
   apiSecret: string;
 };
 
+type FetchContestStandingsOptions = {
+  asManager?: boolean;
+  credentials?: CodeforcesApiCredentials;
+};
+
 type BuildCodeforcesApiUrlInput = CodeforcesApiCredentials & {
   methodName: string;
   params: Record<string, string | number | boolean>;
@@ -92,25 +97,78 @@ export function buildCodeforcesApiUrl({
 
 export async function fetchContestStandings(
   contestId: number,
-  credentials: CodeforcesApiCredentials,
+  { asManager = false, credentials }: FetchContestStandingsOptions = {},
 ) {
-  const url = buildCodeforcesApiUrl({
-    ...credentials,
-    methodName: "contest.standings",
-    params: {
-      contestId,
-      showUnofficial: false,
-    },
-  });
+  const baseParams = {
+    contestId,
+    showUnofficial: false,
+  };
 
+  if (asManager && credentials) {
+    return fetchCodeforcesStandingsUrl(
+      buildCodeforcesApiUrl({
+        ...credentials,
+        methodName: "contest.standings",
+        params: {
+          ...baseParams,
+          asManager: true,
+        },
+      }),
+    );
+  }
+
+  const urls = [
+    buildCodeforcesPublicApiUrl({
+      methodName: "contest.standings",
+      params: baseParams,
+    }),
+  ];
+
+  if (credentials) {
+    urls.push(
+      buildCodeforcesApiUrl({
+        ...credentials,
+        methodName: "contest.standings",
+        params: baseParams,
+      }),
+    );
+  }
+
+  let lastError: Error | null = null;
+
+  for (const url of urls) {
+    try {
+      return await fetchCodeforcesStandingsUrl(url);
+    } catch (error) {
+      lastError =
+        error instanceof Error
+          ? error
+          : new Error("Unable to load Codeforces standings.");
+    }
+  }
+
+  throw lastError ?? new Error("Unable to load Codeforces standings.");
+}
+
+function buildCodeforcesPublicApiUrl({
+  methodName,
+  params,
+}: {
+  methodName: string;
+  params: Record<string, string | number | boolean>;
+}) {
+  return `${CODEFORCES_API_BASE_URL}/${methodName}?${serializeCodeforcesParams(
+    params,
+  )}`;
+}
+
+async function fetchCodeforcesStandingsUrl(url: string) {
   const response = await fetch(url, {
     cache: "no-store",
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Codeforces standings request failed with HTTP ${response.status}.`,
-    );
+    throw new Error(await getCodeforcesHttpErrorMessage(response));
   }
 
   const payload =
@@ -121,6 +179,34 @@ export async function fetchContestStandings(
   }
 
   return codeforcesRowsToTourResults(payload.result.rows);
+}
+
+async function getCodeforcesHttpErrorMessage(response: Response) {
+  const fallbackMessage = `Codeforces standings request failed with HTTP ${response.status}.`;
+
+  try {
+    const responseBody = await response.text();
+
+    if (responseBody.length === 0) {
+      return fallbackMessage;
+    }
+
+    const parsedBody = JSON.parse(responseBody) as unknown;
+
+    if (
+      parsedBody !== null &&
+      typeof parsedBody === "object" &&
+      "comment" in parsedBody &&
+      typeof parsedBody.comment === "string" &&
+      parsedBody.comment.trim().length > 0
+    ) {
+      return parsedBody.comment;
+    }
+  } catch {
+    return fallbackMessage;
+  }
+
+  return fallbackMessage;
 }
 
 export function codeforcesRowsToTourResults(
