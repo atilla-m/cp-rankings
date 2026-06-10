@@ -10,7 +10,12 @@ export default async function Home() {
     return <UnpublishedStandings />;
   }
 
-  return <RankingsView rankings={standings.snapshot.combinedRankings} />;
+  return (
+    <RankingsView
+      qualificationCutoff={standings.snapshot.qualificationCutoff}
+      rankings={standings.snapshot.combinedRankings}
+    />
+  );
 }
 
 function UnpublishedStandings() {

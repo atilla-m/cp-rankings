@@ -29,9 +29,11 @@ test("saves published standings to Redis with combined rankings", async () => {
       source: "manual",
       tour1: [{ handle: " tourist ", score: 500, penalty: 120, official: true }],
       tour2: [{ handle: "Benq", score: 400, penalty: 90, official: true }],
+      qualificationCutoff: 30,
     });
 
     assert.equal(snapshot.source, "manual");
+    assert.equal(snapshot.qualificationCutoff, 30);
     assert.equal(typeof snapshot.updatedAt, "string");
     assert.equal(snapshot.tour1[0].handle, "tourist");
     assert.deepEqual(
@@ -42,6 +44,7 @@ test("saves published standings to Redis with combined rankings", async () => {
     const storedSnapshot = redis.peek("published-standings");
 
     assert.equal(storedSnapshot?.source, "manual");
+    assert.equal(storedSnapshot?.qualificationCutoff, 30);
     assert.deepEqual(
       storedSnapshot?.combinedRankings.map((participant) => participant.handle),
       ["tourist", "Benq"],
@@ -57,12 +60,36 @@ test("loads published standings from Redis", async () => {
       tour1: [{ handle: "tourist", score: 500, penalty: 120, official: true }],
       tour2: [{ handle: "tourist", score: 300, penalty: 90, official: true }],
       combinedRankings: [],
+      qualificationCutoff: 30,
     });
 
     const loaded = await readPublishedStandings();
 
     assert.equal(loaded?.source, "codeforces");
+    assert.equal(loaded?.qualificationCutoff, 30);
     assert.equal(loaded?.combinedRankings[0].totalScore, 800);
+  });
+});
+
+test("old published standings snapshots fall back to a top 20 cutoff", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("published-standings", {
+      source: "manual",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      tour1: makeRankedTourResults(21),
+      tour2: [],
+      combinedRankings: [],
+    });
+
+    const loaded = await readPublishedStandings();
+
+    assert.equal(loaded?.qualificationCutoff, 20);
+    assert.equal(
+      loaded?.combinedRankings.filter((participant) => participant.qualified)
+        .length,
+      20,
+    );
+    assert.equal(loaded?.combinedRankings[20].status, "Not qualified");
   });
 });
 
@@ -218,7 +245,7 @@ class MockRedisClient {
     return "OK";
   }
 
-  seed(key: string, value: StoredSnapshot) {
+  seed(key: string, value: unknown) {
     this.values.set(key, clone(value));
   }
 
@@ -320,4 +347,13 @@ async function readExistingSnapshot(snapshotPath: string) {
 
 function clone<T>(value: T) {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function makeRankedTourResults(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    handle: `participant${index + 1}`,
+    score: count - index,
+    penalty: index,
+    official: true,
+  }));
 }

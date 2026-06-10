@@ -9,6 +9,7 @@ import {
 
 const PUBLISHED_STANDINGS_PATH = path.join("data", "published-standings.json");
 const PUBLISHED_STANDINGS_REDIS_KEY = "published-standings";
+const DEFAULT_QUALIFICATION_CUTOFF = 20;
 
 type SnapshotRedisClient = {
   get: (key: string) => Promise<unknown | null>;
@@ -25,6 +26,7 @@ export type PublishedStandingsSnapshot = {
   tour1: TourResult[];
   tour2: TourResult[];
   combinedRankings: RankedParticipant[];
+  qualificationCutoff: number;
   source: StandingsSource;
   updatedAt: string;
 };
@@ -32,6 +34,7 @@ export type PublishedStandingsSnapshot = {
 export type SavePublishedStandingsInput = {
   tour1: TourResult[];
   tour2: TourResult[];
+  qualificationCutoff?: number;
   source: StandingsSource;
 };
 
@@ -77,10 +80,14 @@ export async function readPublishedStandings() {
 export async function savePublishedStandings(input: SavePublishedStandingsInput) {
   const tour1 = validateTourResults(input.tour1, "tour1");
   const tour2 = validateTourResults(input.tour2, "tour2");
+  const qualificationCutoff = validateQualificationCutoff(
+    input.qualificationCutoff,
+  );
   const snapshot: PublishedStandingsSnapshot = {
     tour1,
     tour2,
-    combinedRankings: buildCombinedRankings({ tour1, tour2 }),
+    combinedRankings: buildCombinedRankings(tour1, tour2, qualificationCutoff),
+    qualificationCutoff,
     source: validateSource(input.source),
     updatedAt: new Date().toISOString(),
   };
@@ -203,6 +210,9 @@ function parsePublishedStandingsSnapshot(value: unknown) {
   const snapshot = value as Partial<PublishedStandingsSnapshot>;
   const tour1 = validateTourResults(snapshot.tour1, "tour1");
   const tour2 = validateTourResults(snapshot.tour2, "tour2");
+  const qualificationCutoff = validateQualificationCutoff(
+    snapshot.qualificationCutoff,
+  );
   const source = validateSource(snapshot.source);
 
   if (typeof snapshot.updatedAt !== "string") {
@@ -212,7 +222,8 @@ function parsePublishedStandingsSnapshot(value: unknown) {
   return {
     tour1,
     tour2,
-    combinedRankings: buildCombinedRankings({ tour1, tour2 }),
+    combinedRankings: buildCombinedRankings(tour1, tour2, qualificationCutoff),
+    qualificationCutoff,
     source,
     updatedAt: snapshot.updatedAt,
   };
@@ -236,6 +247,18 @@ function validateSource(value: unknown): StandingsSource {
   }
 
   throw new Error("Standings source must be manual or codeforces.");
+}
+
+function validateQualificationCutoff(value: unknown): number {
+  if (value === undefined) {
+    return DEFAULT_QUALIFICATION_CUTOFF;
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error("Qualification cutoff must be a positive integer.");
+  }
+
+  return value;
 }
 
 function validateTourResults(value: unknown, field: "tour1" | "tour2") {

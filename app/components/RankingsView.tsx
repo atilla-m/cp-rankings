@@ -6,6 +6,7 @@ import type { RankedParticipant } from "@/app/lib/rankings";
 type RankingsViewProps = {
   children?: React.ReactNode;
   description?: string;
+  qualificationCutoff?: number;
   qualifiedStatLabel?: string;
   qualifiedStatValue?: number | string;
   rankings: RankedParticipant[];
@@ -19,6 +20,7 @@ const numberFormatter = new Intl.NumberFormat("en-US");
 export function RankingsView({
   children,
   description = "Tour 1 and Tour 2 official standings for live round qualification.",
+  qualificationCutoff = 20,
   qualifiedStatLabel = "Qualified",
   qualifiedStatValue,
   rankings,
@@ -69,7 +71,7 @@ export function RankingsView({
               label={qualifiedStatLabel}
               value={qualifiedStatValue ?? qualifiedCount}
             />
-            <Stat label="Cutoff" value="Top 20" />
+            <Stat label="Cutoff" value={`Top ${qualificationCutoff}`} />
             {showSourceStat && sourceLabel ? (
               <Stat label="Source" value={sourceLabel} />
             ) : null}

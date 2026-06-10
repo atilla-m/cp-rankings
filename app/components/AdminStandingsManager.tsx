@@ -37,12 +37,18 @@ type DraftStatus = "empty" | "loading" | "valid" | "error" | "stale";
 const textAreaPlaceholder = `handle,score,penalty
 tourist,500,120
 Benq,400,90`;
+const defaultQualificationCutoff = 20;
+const qualificationCutoffError =
+  "Qualification cutoff must be a positive integer.";
 
 export function AdminStandingsManager() {
   const [password, setPassword] = useState("");
   const [verified, setVerified] = useState(false);
   const [tour1Text, setTour1Text] = useState("");
   const [tour2Text, setTour2Text] = useState("");
+  const [qualificationCutoffText, setQualificationCutoffText] = useState(
+    String(defaultQualificationCutoff),
+  );
   const [draftStandings, setDraftStandings] = useState<DraftStandings | null>(
     null,
   );
@@ -57,21 +63,31 @@ export function AdminStandingsManager() {
   const [verifying, setVerifying] = useState(false);
   const activeCodeforcesRequestId = useRef(0);
 
+  const qualificationCutoff = parseQualificationCutoff(
+    qualificationCutoffText,
+  );
+  const effectiveQualificationCutoff =
+    qualificationCutoff ?? defaultQualificationCutoff;
   const combinedRankings = useMemo(
     () =>
-      buildCombinedRankings({
-        tour1: draftStandings?.tour1 ?? [],
-        tour2: draftStandings?.tour2 ?? [],
-      }),
-    [draftStandings],
+      buildCombinedRankings(
+        draftStandings?.tour1 ?? [],
+        draftStandings?.tour2 ?? [],
+        effectiveQualificationCutoff,
+      ),
+    [draftStandings, effectiveQualificationCutoff],
   );
   const qualifiedCount = combinedRankings.filter((row) => row.qualified).length;
+  const cutoffErrorMessage =
+    qualificationCutoff === null ? qualificationCutoffError : null;
   const canSave =
     draftStatus === "valid" &&
     draftStandings !== null &&
+    cutoffErrorMessage === null &&
     !loadingCodeforces &&
     !saving;
-  const displayedErrorMessage = loadErrorMessage ?? saveErrorMessage;
+  const displayedErrorMessage =
+    cutoffErrorMessage ?? loadErrorMessage ?? saveErrorMessage;
 
   async function verifyPassword() {
     setVerifying(true);
@@ -235,6 +251,11 @@ export function AdminStandingsManager() {
   }
 
   async function saveSnapshot() {
+    if (qualificationCutoff === null) {
+      setSaveErrorMessage(qualificationCutoffError);
+      return;
+    }
+
     if (draftStatus !== "valid" || !draftStandings) {
       setSaveErrorMessage("Load standings into preview before saving.");
       return;
@@ -254,6 +275,7 @@ export function AdminStandingsManager() {
           source: draftStandings.source,
           tour1: draftStandings.tour1,
           tour2: draftStandings.tour2,
+          qualificationCutoff,
         }),
       });
       const payload = (await response.json()) as SaveSnapshotResponse;
@@ -307,8 +329,9 @@ export function AdminStandingsManager() {
   return (
     <RankingsView
       description="Load, preview, and publish the standings snapshot shown on the public site."
+      qualificationCutoff={effectiveQualificationCutoff}
       qualifiedStatLabel="Qualified contestants"
-      qualifiedStatValue={`${qualifiedCount} / Top 20`}
+      qualifiedStatValue={`${qualifiedCount} / Top ${effectiveQualificationCutoff}`}
       rankings={combinedRankings}
       showSourceStat={draftStandings !== null}
       sourceLabel={draftStandings?.label}
@@ -370,6 +393,24 @@ export function AdminStandingsManager() {
               <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
                 Do not spam refresh. Codeforces API is rate-limited.
               </p>
+
+              <label className="flex w-full flex-col gap-1 sm:max-w-xs">
+                <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                  Qualification cutoff
+                </span>
+                <input
+                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                  type="number"
+                  value={qualificationCutoffText}
+                  onChange={(event) => {
+                    setSaveErrorMessage(null);
+                    setQualificationCutoffText(event.target.value);
+                  }}
+                />
+              </label>
 
               <div className="flex flex-col gap-2 sm:flex-row">
                 <button
@@ -439,6 +480,20 @@ function parseTourStandings(label: "Tour 1" | "Tour 2", text: string) {
 
     throw new Error(`${label}: ${message}`);
   }
+}
+
+function parseQualificationCutoff(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!/^\d+$/.test(trimmedValue)) {
+    return null;
+  }
+
+  const parsedValue = Number(trimmedValue);
+
+  return Number.isSafeInteger(parsedValue) && parsedValue >= 1
+    ? parsedValue
+    : null;
 }
 
 function StandingsInput({

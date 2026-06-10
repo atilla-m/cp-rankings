@@ -23,22 +23,16 @@ type ParticipantAccumulator = Omit<
   "rank" | "qualified" | "status" | "totalScore" | "totalPenalty"
 >;
 
-type BuildCombinedRankingsInput = {
-  tour1: TourResult[];
-  tour2: TourResult[];
-  qualifierLimit?: number;
-};
-
 const collator = new Intl.Collator("en", {
   numeric: true,
   sensitivity: "base",
 });
 
-export function buildCombinedRankings({
-  tour1,
-  tour2,
-  qualifierLimit = 20,
-}: BuildCombinedRankingsInput): RankedParticipant[] {
+export function buildCombinedRankings(
+  tour1: TourResult[],
+  tour2: TourResult[],
+  qualificationCutoff = 20,
+): RankedParticipant[] {
   const participants = new Map<string, ParticipantAccumulator>();
 
   addTourResults(participants, tour1, "tour1");
@@ -62,7 +56,7 @@ export function buildCombinedRankings({
       return collator.compare(a.handle, b.handle);
     })
     .map((participant, index) => {
-      const qualified = index < qualifierLimit;
+      const qualified = index < qualificationCutoff;
 
       return {
         ...participant,
