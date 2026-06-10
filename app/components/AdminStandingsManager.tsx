@@ -57,7 +57,7 @@ export function AdminStandingsManager() {
   const [verifying, setVerifying] = useState(false);
   const activeCodeforcesRequestId = useRef(0);
 
-  const previewRankings = useMemo(
+  const combinedRankings = useMemo(
     () =>
       buildCombinedRankings({
         tour1: draftStandings?.tour1 ?? [],
@@ -65,6 +65,7 @@ export function AdminStandingsManager() {
       }),
     [draftStandings],
   );
+  const qualifiedCount = combinedRankings.filter((row) => row.qualified).length;
   const canSave =
     draftStatus === "valid" &&
     draftStandings !== null &&
@@ -306,7 +307,9 @@ export function AdminStandingsManager() {
   return (
     <RankingsView
       description="Load, preview, and publish the standings snapshot shown on the public site."
-      rankings={previewRankings}
+      qualifiedStatLabel="Qualified contestants"
+      qualifiedStatValue={`${qualifiedCount} / Top 20`}
+      rankings={combinedRankings}
       showSourceStat={draftStandings !== null}
       sourceLabel={draftStandings?.label}
       title="Admin standings"
