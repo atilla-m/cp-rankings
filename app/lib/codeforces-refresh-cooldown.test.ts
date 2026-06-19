@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { GET as getCodeforcesStandings } from "@/app/api/codeforces/standings/route";
+import { POST as postCodeforcesStandings } from "@/app/api/codeforces/standings/route";
+import {
+  resetCodeforcesConfigStoreForTests,
+  setCodeforcesConfigRedisClientForTests,
+} from "./codeforces-config-store";
 import {
   acquireCodeforcesRefreshCooldown,
   resetCodeforcesRefreshCooldownForTest,
@@ -234,11 +239,170 @@ test("full credentials with CF_AS_MANAGER=true call manager signed request first
   });
 });
 
-function adminRequest() {
+test("Codeforces load uses admin-provided contest IDs", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv({}, async () => {
+      const requestedUrls: string[] = [];
+
+      await withMockFetch(async (input) => {
+        requestedUrls.push(String(input));
+
+        return codeforcesSuccessResponse();
+      }, async () => {
+        const response = await postCodeforcesStandings(
+          adminRequest({
+            groupCode: "test-group",
+            tour1ContestId: 111111,
+            tour2ContestId: 222222,
+          }),
+        );
+
+        assert.equal(response.status, 200);
+      });
+
+      assert.equal(requestedUrls.length, 2);
+      assert.equal(new URL(requestedUrls[0]).searchParams.get("contestId"), "111111");
+      assert.equal(new URL(requestedUrls[1]).searchParams.get("contestId"), "222222");
+    });
+  });
+});
+
+test("group-html mode uses admin-provided group code and contest IDs", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv(
+      {
+        fetchMode: "group-html",
+        groupCode: "env-group",
+      },
+      async () => {
+        const requestedUrls: string[] = [];
+
+        await withMockFetch(async (input) => {
+          requestedUrls.push(String(input));
+
+          return codeforcesGroupHtmlSuccessResponse();
+        }, async () => {
+          const response = await postCodeforcesStandings(
+            adminRequest({
+              groupCode: "admin-group",
+              tour1ContestId: 111111,
+              tour2ContestId: 222222,
+            }),
+          );
+
+          assert.equal(response.status, 200);
+        });
+
+        assert.equal(requestedUrls.length, 2);
+        assert.equal(
+          requestedUrls[0],
+          "https://codeforces.com/group/admin-group/contest/111111/standings/groupmates/true",
+        );
+        assert.equal(
+          requestedUrls[1],
+          "https://codeforces.com/group/admin-group/contest/222222/standings/groupmates/true",
+        );
+      },
+    );
+  });
+});
+
+test("group-html mode does not call public contest standings first", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv({ fetchMode: "group-html" }, async () => {
+      const requestedUrls: string[] = [];
+
+      await withMockFetch(async (input) => {
+        requestedUrls.push(String(input));
+
+        return codeforcesGroupHtmlSuccessResponse();
+      }, async () => {
+        const response = await postCodeforcesStandings(
+          adminRequest({
+            groupCode: "admin-group",
+            tour1ContestId: 111111,
+            tour2ContestId: 222222,
+          }),
+        );
+
+        assert.equal(response.status, 200);
+      });
+
+      assert.equal(requestedUrls.length, 2);
+      assert.equal(requestedUrls.some((url) => url.includes("/api/")), false);
+      assert.equal(
+        requestedUrls.every((url) =>
+          url.includes("/standings/groupmates/true"),
+        ),
+        true,
+      );
+    });
+  });
+});
+
+test("group-html mode requires a group code before fetching", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv({ fetchMode: "group-html" }, async () => {
+      let fetchCount = 0;
+
+      await withMockFetch(async () => {
+        fetchCount += 1;
+        return codeforcesSuccessResponse();
+      }, async () => {
+        const response = await postCodeforcesStandings(
+          adminRequest({
+            groupCode: "",
+            tour1ContestId: 111111,
+            tour2ContestId: 222222,
+          }),
+        );
+        const body = (await response.json()) as { error: string };
+
+        assert.equal(response.status, 500);
+        assert.equal(
+          body.error,
+          "Codeforces group code is required when CF_FETCH_MODE=group-html.",
+        );
+        assert.equal(fetchCount, 0);
+      });
+    });
+  });
+});
+
+test("invalid admin-provided contest ID is rejected before fetching", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv({}, async () => {
+      let fetchCount = 0;
+
+      await withMockFetch(async () => {
+        fetchCount += 1;
+        return codeforcesSuccessResponse();
+      }, async () => {
+        const response = await postCodeforcesStandings(
+          adminRequest({
+            groupCode: "test-group",
+            tour1ContestId: "bad",
+            tour2ContestId: 222222,
+          }),
+        );
+        const body = (await response.json()) as { error: string };
+
+        assert.equal(response.status, 500);
+        assert.equal(body.error, "Tour 1 contest ID must be a positive integer.");
+        assert.equal(fetchCount, 0);
+      });
+    });
+  });
+});
+
+function adminRequest(body?: unknown) {
   return new Request("http://localhost/api/codeforces/standings", {
+    method: body === undefined ? "GET" : "POST",
     headers: {
       "x-admin-password": "admin-secret",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
 
@@ -246,6 +410,8 @@ type CodeforcesRouteEnvOptions = {
   apiKey?: string;
   apiSecret?: string;
   asManager?: string;
+  fetchMode?: string;
+  groupCode?: string;
 };
 
 type EnvOverrides = Record<string, string | undefined>;
@@ -290,6 +456,17 @@ class MockCooldownRedisClient {
   }
 }
 
+class MockCodeforcesConfigRedisClient {
+  async get(key: string) {
+    assert.equal(key, "codeforces:config");
+    return null;
+  }
+
+  async set() {
+    return "OK";
+  }
+}
+
 async function withMockRedisCooldown(callback: () => Promise<void>) {
   await withEnv(
     {
@@ -300,11 +477,16 @@ async function withMockRedisCooldown(callback: () => Promise<void>) {
     async () => {
       resetCodeforcesRefreshCooldownForTest();
       setCodeforcesCooldownRedisClientForTests(new MockCooldownRedisClient());
+      resetCodeforcesConfigStoreForTests();
+      setCodeforcesConfigRedisClientForTests(
+        new MockCodeforcesConfigRedisClient(),
+      );
 
       try {
         await callback();
       } finally {
         resetCodeforcesRefreshCooldownForTest();
+        resetCodeforcesConfigStoreForTests();
       }
     },
   );
@@ -317,16 +499,20 @@ async function withCodeforcesRouteEnv(
   const previousAdminPassword = process.env.ADMIN_PASSWORD;
   const previousContest1Id = process.env.CF_CONTEST_1_ID;
   const previousContest2Id = process.env.CF_CONTEST_2_ID;
+  const previousGroupCode = process.env.CF_GROUP_CODE;
   const previousApiKey = process.env.CF_API_KEY;
   const previousApiSecret = process.env.CF_API_SECRET;
   const previousAsManager = process.env.CF_AS_MANAGER;
+  const previousFetchMode = process.env.CF_FETCH_MODE;
 
   process.env.ADMIN_PASSWORD = "admin-secret";
   process.env.CF_CONTEST_1_ID = "697487";
   process.env.CF_CONTEST_2_ID = "697488";
+  applyOptionalEnv("CF_GROUP_CODE", options.groupCode);
   applyOptionalEnv("CF_API_KEY", options.apiKey);
   applyOptionalEnv("CF_API_SECRET", options.apiSecret);
   applyOptionalEnv("CF_AS_MANAGER", options.asManager);
+  applyOptionalEnv("CF_FETCH_MODE", options.fetchMode);
 
   try {
     await callback();
@@ -334,10 +520,13 @@ async function withCodeforcesRouteEnv(
     restoreEnv("ADMIN_PASSWORD", previousAdminPassword);
     restoreEnv("CF_CONTEST_1_ID", previousContest1Id);
     restoreEnv("CF_CONTEST_2_ID", previousContest2Id);
+    restoreEnv("CF_GROUP_CODE", previousGroupCode);
     restoreEnv("CF_API_KEY", previousApiKey);
     restoreEnv("CF_API_SECRET", previousApiSecret);
     restoreEnv("CF_AS_MANAGER", previousAsManager);
+    restoreEnv("CF_FETCH_MODE", previousFetchMode);
     resetCodeforcesRefreshCooldownForTest();
+    resetCodeforcesConfigStoreForTests();
   }
 }
 
@@ -411,6 +600,57 @@ function codeforcesFailureResponse() {
       status: 400,
       headers: {
         "content-type": "application/json",
+      },
+    },
+  );
+}
+
+function codeforcesSuccessResponse() {
+  return new Response(
+    JSON.stringify({
+      status: "OK",
+      result: {
+        rows: [
+          {
+            party: {
+              members: [{ handle: "tourist" }],
+              participantType: "CONTESTANT",
+            },
+            points: 100,
+            penalty: 1,
+          },
+        ],
+      },
+    }),
+    {
+      headers: {
+        "content-type": "application/json",
+      },
+    },
+  );
+}
+
+function codeforcesGroupHtmlSuccessResponse() {
+  return new Response(
+    `
+      <table class="standings">
+        <tr>
+          <th>#</th>
+          <th>Who</th>
+          <th>=</th>
+          <th>Penalty</th>
+        </tr>
+        <tr>
+          <td>1</td>
+          <td><a href="/profile/tourist">tourist</a></td>
+          <td>100</td>
+          <td>1</td>
+        </tr>
+      </table>
+    `,
+    {
+      headers: {
+        "content-type": "text/html",
       },
     },
   );

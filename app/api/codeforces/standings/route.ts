@@ -6,30 +6,62 @@ import { assertAdminRequest } from "@/app/lib/admin-auth";
 import {
   acquireCodeforcesRefreshCooldown,
 } from "@/app/lib/codeforces-refresh-cooldown";
+import {
+  getCodeforcesEnvDefaults,
+  readCodeforcesConfig,
+  requireCompleteCodeforcesConfig,
+  validateCodeforcesConfigInput,
+  type CodeforcesConfig,
+} from "@/app/lib/codeforces-config-store";
+import { fetchCodeforcesGroupHtmlStandings } from "@/app/lib/codeforces-group-html";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  return loadCodeforcesStandings(request);
+}
+
+export async function POST(request: Request) {
+  try {
+    assertAdminRequest(request);
+
+    return await loadCodeforcesStandings(request, await readRequestConfig(request));
+  } catch (error) {
+    return codeforcesErrorResponse(error);
+  }
+}
+
+async function loadCodeforcesStandings(
+  request: Request,
+  requestConfig?: ReturnType<typeof validateCodeforcesConfigInput>,
+) {
   try {
     assertAdminRequest(request);
 
     const asManager = readBooleanEnv("CF_AS_MANAGER");
     const credentials = readCodeforcesCredentials(asManager);
-    const contest1Id = readContestId("CF_CONTEST_1_ID");
-    const contest2Id = readContestId("CF_CONTEST_2_ID");
+    const config = requireCompleteCodeforcesConfig(
+      requestConfig
+        ? getEffectiveRequestConfig(requestConfig)
+        : await readCodeforcesConfig(),
+    );
 
     await acquireCodeforcesRefreshCooldown();
 
-    const tour1 = await fetchContestStandings(contest1Id, {
+    const tour1 = await fetchConfiguredContestStandings({
       asManager,
+      config,
       credentials,
+      contestId: config.tour1ContestId,
     });
 
     await sleep(2000);
 
-    const tour2 = await fetchContestStandings(contest2Id, {
+    const tour2 = await fetchConfiguredContestStandings({
       asManager,
+      config,
       credentials,
+      contestId: config.tour2ContestId,
     });
 
     return Response.json({
@@ -37,28 +69,66 @@ export async function GET(request: Request) {
       tour2,
     });
   } catch (error) {
-    return Response.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to load Codeforces standings.",
-      },
-      {
-        status: 500,
-      },
-    );
+    return codeforcesErrorResponse(error);
   }
 }
 
-function readEnv(name: string) {
-  const value = process.env[name]?.trim();
+function getEffectiveRequestConfig(requestConfig: CodeforcesConfig) {
+  const envDefaults = getCodeforcesEnvDefaults();
 
-  if (!value) {
-    throw new Error(`${name} is not configured.`);
+  return {
+    groupCode: requestConfig.groupCode || envDefaults.groupCode,
+    tour1ContestId: requestConfig.tour1ContestId ?? envDefaults.tour1ContestId,
+    tour2ContestId: requestConfig.tour2ContestId ?? envDefaults.tour2ContestId,
+  };
+}
+
+async function fetchConfiguredContestStandings({
+  asManager,
+  config,
+  contestId,
+  credentials,
+}: {
+  asManager: boolean;
+  config: ReturnType<typeof requireCompleteCodeforcesConfig>;
+  contestId: number;
+  credentials?: ReturnType<typeof readCodeforcesCredentials>;
+}) {
+  if (config.fetchMode === "group-html") {
+    return fetchCodeforcesGroupHtmlStandings({
+      contestId,
+      groupCode: config.groupCode,
+    });
   }
 
-  return value;
+  return fetchContestStandings(contestId, {
+    asManager,
+    credentials,
+  });
+}
+
+async function readRequestConfig(request: Request) {
+  const body = (await request.json()) as unknown;
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Codeforces config payload is invalid.");
+  }
+
+  return validateCodeforcesConfigInput(body);
+}
+
+function codeforcesErrorResponse(error: unknown) {
+  return Response.json(
+    {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unable to load Codeforces standings.",
+    },
+    {
+      status: 500,
+    },
+  );
 }
 
 function readOptionalEnv(name: string) {
@@ -95,14 +165,4 @@ function readCodeforcesCredentials(asManager: boolean) {
     apiKey,
     apiSecret,
   };
-}
-
-function readContestId(name: string) {
-  const value = Number(readEnv(name));
-
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-
-  return value;
 }

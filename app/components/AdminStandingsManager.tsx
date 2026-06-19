@@ -29,6 +29,20 @@ type CodeforcesStandingsResponse =
     }
   | ApiErrorResponse;
 
+type CodeforcesConfig = {
+  groupCode: string;
+  tour1ContestId: number | null;
+  tour2ContestId: number | null;
+};
+
+type CodeforcesConfigResponse =
+  | {
+      config: CodeforcesConfig & {
+        updatedAt?: string;
+      };
+    }
+  | ApiErrorResponse;
+
 type SaveSnapshotResponse =
   | {
       snapshot: {
@@ -45,12 +59,16 @@ Benq,400,90`;
 const defaultQualificationCutoff = 20;
 const qualificationCutoffError =
   "Qualification cutoff must be a positive integer.";
+const contestIdError = "Contest IDs must be positive integers.";
 
 export function AdminStandingsManager() {
   const [password, setPassword] = useState("");
   const [verified, setVerified] = useState(false);
   const [tour1Text, setTour1Text] = useState("");
   const [tour2Text, setTour2Text] = useState("");
+  const [codeforcesGroupCode, setCodeforcesGroupCode] = useState("");
+  const [codeforcesTour1ContestId, setCodeforcesTour1ContestId] = useState("");
+  const [codeforcesTour2ContestId, setCodeforcesTour2ContestId] = useState("");
   const [activeTourId, setActiveTourId] = useState<TourId>("tour-1");
   const [tour1CutoffText, setTour1CutoffText] = useState(
     String(defaultQualificationCutoff),
@@ -74,9 +92,15 @@ export function AdminStandingsManager() {
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [loadingCodeforces, setLoadingCodeforces] = useState(false);
+  const [savingCodeforcesConfig, setSavingCodeforcesConfig] = useState(false);
   const [savingTourId, setSavingTourId] = useState<TourId | null>(null);
   const [verifying, setVerifying] = useState(false);
   const activeCodeforcesRequestId = useRef(0);
+  const codeforcesConfigInputRef = useRef({
+    groupCode: "",
+    tour1ContestId: "",
+    tour2ContestId: "",
+  });
 
   const tour1Cutoff = parseQualificationCutoff(tour1CutoffText);
   const tour2Cutoff = parseQualificationCutoff(tour2CutoffText);
@@ -134,7 +158,18 @@ export function AdminStandingsManager() {
       }
 
       setVerified(true);
-      setStatusMessage("Admin access verified.");
+
+      try {
+        await loadSavedCodeforcesConfig();
+        setStatusMessage("Admin access verified.");
+      } catch (configError) {
+        setLoadErrorMessage(
+          configError instanceof Error
+            ? configError.message
+            : "Unable to load Codeforces config.",
+        );
+        setStatusMessage("Admin access verified.");
+      }
     } catch (error) {
       setVerified(false);
       setLoadErrorMessage(
@@ -142,6 +177,62 @@ export function AdminStandingsManager() {
       );
     } finally {
       setVerifying(false);
+    }
+  }
+
+  async function loadSavedCodeforcesConfig() {
+    const response = await fetch("/api/admin/codeforces-config", {
+      cache: "no-store",
+      headers: adminHeaders(password),
+    });
+    const payload = (await response.json()) as CodeforcesConfigResponse;
+
+    if (!response.ok || "error" in payload) {
+      throw new Error(
+        "error" in payload
+          ? payload.error
+          : "Unable to load Codeforces config.",
+      );
+    }
+
+    applyCodeforcesConfig(payload.config);
+  }
+
+  async function saveCodeforcesConfig() {
+    setSavingCodeforcesConfig(true);
+    setLoadErrorMessage(null);
+    setSaveErrorMessage(null);
+
+    try {
+      const config = getCodeforcesConfigPayload();
+      const response = await fetch("/api/admin/codeforces-config", {
+        method: "POST",
+        headers: {
+          ...adminHeaders(password),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(config),
+      });
+      const payload = (await response.json()) as CodeforcesConfigResponse;
+
+      if (!response.ok || "error" in payload) {
+        throw new Error(
+          "error" in payload
+            ? payload.error
+            : "Unable to save Codeforces config.",
+        );
+      }
+
+      applyCodeforcesConfig(payload.config);
+      setStatusMessage("Codeforces config saved.");
+    } catch (error) {
+      setLoadErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to save Codeforces config.",
+      );
+    } finally {
+      setSavingCodeforcesConfig(false);
     }
   }
 
@@ -203,9 +294,27 @@ export function AdminStandingsManager() {
     setSaveErrorMessage(null);
 
     try {
+      const config = getCodeforcesConfigPayload();
+
+      const savedConfig = await saveCodeforcesConfigPayload(config);
+
+      if (
+        !isActiveCodeforcesRequest(requestId) ||
+        !codeforcesInputsMatchConfig(config)
+      ) {
+        return;
+      }
+
+      applyCodeforcesConfig(savedConfig);
+
       const response = await fetch("/api/codeforces/standings", {
+        method: "POST",
         cache: "no-store",
-        headers: adminHeaders(password),
+        headers: {
+          ...adminHeaders(password),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(config),
       });
       const payload = (await response.json()) as CodeforcesStandingsResponse;
 
@@ -250,6 +359,28 @@ export function AdminStandingsManager() {
     }
   }
 
+  async function saveCodeforcesConfigPayload(config: CodeforcesConfig) {
+    const response = await fetch("/api/admin/codeforces-config", {
+      method: "POST",
+      headers: {
+        ...adminHeaders(password),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(config),
+    });
+    const payload = (await response.json()) as CodeforcesConfigResponse;
+
+    if (!response.ok || "error" in payload) {
+      throw new Error(
+        "error" in payload
+          ? payload.error
+          : "Unable to save Codeforces config.",
+      );
+    }
+
+    return payload.config;
+  }
+
   function clearPreview() {
     invalidateCodeforcesRequest();
     setDraftStandings(null);
@@ -257,6 +388,73 @@ export function AdminStandingsManager() {
     setLoadErrorMessage(null);
     setSaveErrorMessage(null);
     setStatusMessage("Preview cleared.");
+  }
+
+  function codeforcesInputsMatchConfig(config: CodeforcesConfig) {
+    const currentInput = codeforcesConfigInputRef.current;
+
+    return (
+      currentInput.groupCode.trim() === config.groupCode &&
+      currentInput.tour1ContestId.trim() ===
+        (config.tour1ContestId?.toString() ?? "") &&
+      currentInput.tour2ContestId.trim() ===
+        (config.tour2ContestId?.toString() ?? "")
+    );
+  }
+
+  function getCodeforcesConfigPayload(): CodeforcesConfig {
+    const tour1ContestId = parseContestIdText(
+      codeforcesTour1ContestId,
+      "Tour 1 contest ID",
+    );
+    const tour2ContestId = parseContestIdText(
+      codeforcesTour2ContestId,
+      "Tour 2 contest ID",
+    );
+
+    return {
+      groupCode: codeforcesGroupCode.trim(),
+      tour1ContestId,
+      tour2ContestId,
+    };
+  }
+
+  function applyCodeforcesConfig(config: CodeforcesConfig) {
+    codeforcesConfigInputRef.current = {
+      groupCode: config.groupCode,
+      tour1ContestId: config.tour1ContestId?.toString() ?? "",
+      tour2ContestId: config.tour2ContestId?.toString() ?? "",
+    };
+    setCodeforcesGroupCode(config.groupCode);
+    setCodeforcesTour1ContestId(config.tour1ContestId?.toString() ?? "");
+    setCodeforcesTour2ContestId(config.tour2ContestId?.toString() ?? "");
+  }
+
+  function updateCodeforcesGroupCode(value: string) {
+    invalidateCodeforcesDraft();
+    codeforcesConfigInputRef.current = {
+      ...codeforcesConfigInputRef.current,
+      groupCode: value,
+    };
+    setCodeforcesGroupCode(value);
+  }
+
+  function updateCodeforcesTour1ContestId(value: string) {
+    invalidateCodeforcesDraft();
+    codeforcesConfigInputRef.current = {
+      ...codeforcesConfigInputRef.current,
+      tour1ContestId: value,
+    };
+    setCodeforcesTour1ContestId(value);
+  }
+
+  function updateCodeforcesTour2ContestId(value: string) {
+    invalidateCodeforcesDraft();
+    codeforcesConfigInputRef.current = {
+      ...codeforcesConfigInputRef.current,
+      tour2ContestId: value,
+    };
+    setCodeforcesTour2ContestId(value);
   }
 
   function invalidateCodeforcesRequest() {
@@ -283,6 +481,30 @@ export function AdminStandingsManager() {
       setDraftStatus("empty");
       setStatusMessage(
         "Inputs changed. Load imported standings again before saving.",
+      );
+    }
+  }
+
+  function invalidateCodeforcesDraft() {
+    invalidateCodeforcesRequest();
+    setLoadErrorMessage(null);
+    setSaveErrorMessage(null);
+
+    if (draftStandings?.source === "codeforces") {
+      setDraftStandings(null);
+      setDraftStatus("stale");
+      setStatusMessage(
+        "Codeforces config changed. Load Codeforces standings again before saving.",
+      );
+    } else if (draftStatus === "loading") {
+      setDraftStatus("empty");
+      setStatusMessage(
+        "Codeforces config changed. Load Codeforces standings again before saving.",
+      );
+    } else if (draftStatus === "error") {
+      setDraftStatus("empty");
+      setStatusMessage(
+        "Codeforces config changed. Load Codeforces standings again before saving.",
       );
     }
   }
@@ -440,6 +662,71 @@ export function AdminStandingsManager() {
                 Do not spam refresh. Codeforces API is rate-limited.
               </p>
 
+              <fieldset className="grid gap-3 rounded-lg border border-slate-200 p-3">
+                <legend className="px-1 text-sm font-semibold text-slate-800">
+                  Codeforces config
+                </legend>
+
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                      Codeforces group code
+                    </span>
+                    <input
+                      className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+                      type="text"
+                      value={codeforcesGroupCode}
+                      onChange={(event) => {
+                        updateCodeforcesGroupCode(event.target.value);
+                      }}
+                    />
+                  </label>
+
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                      Tour 1 contest ID
+                    </span>
+                    <input
+                      className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      type="number"
+                      value={codeforcesTour1ContestId}
+                      onChange={(event) => {
+                        updateCodeforcesTour1ContestId(event.target.value);
+                      }}
+                    />
+                  </label>
+
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                      Tour 2 contest ID
+                    </span>
+                    <input
+                      className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      type="number"
+                      value={codeforcesTour2ContestId}
+                      onChange={(event) => {
+                        updateCodeforcesTour2ContestId(event.target.value);
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <button
+                  className="h-10 w-fit rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  disabled={savingCodeforcesConfig || loadingCodeforces}
+                  type="button"
+                  onClick={saveCodeforcesConfig}
+                >
+                  {savingCodeforcesConfig ? "Saving config" : "Save config"}
+                </button>
+              </fieldset>
+
               <div className="inline-flex h-10 w-full overflow-hidden rounded-md border border-slate-300 bg-white p-0.5 sm:w-fit">
                 <button
                   className={tabButtonClass(activeTourId === "tour-1")}
@@ -485,7 +772,7 @@ export function AdminStandingsManager() {
               <div className="flex flex-col gap-2 sm:flex-row">
                 <button
                   className="h-10 rounded-md border border-sky-700 bg-sky-700 px-4 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:border-sky-300 disabled:bg-sky-300"
-                  disabled={loadingCodeforces}
+                  disabled={loadingCodeforces || savingCodeforcesConfig}
                   type="button"
                   onClick={loadCodeforcesStandings}
                 >
@@ -554,6 +841,7 @@ export function AdminStandingsManager() {
       rows !== undefined &&
       rows.length > 0 &&
       !loadingCodeforces &&
+      !savingCodeforcesConfig &&
       savingTourId === null
     );
   }
@@ -588,6 +876,22 @@ function parseQualificationCutoff(value: string) {
   return Number.isSafeInteger(parsedValue) && parsedValue >= 1
     ? parsedValue
     : null;
+}
+
+function parseContestIdText(value: string, label: string) {
+  const trimmedValue = value.trim();
+
+  if (!/^\d+$/.test(trimmedValue)) {
+    throw new Error(`${label} is required and must be a positive integer.`);
+  }
+
+  const parsedValue = Number(trimmedValue);
+
+  if (!Number.isSafeInteger(parsedValue) || parsedValue < 1) {
+    throw new Error(contestIdError);
+  }
+
+  return parsedValue;
 }
 
 function parseDisqualifications(
