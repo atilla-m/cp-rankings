@@ -1,9 +1,14 @@
 "use client";
 
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { RankingsView } from "@/app/components/RankingsView";
 import { parseStandingsImport } from "@/app/lib/import-standings";
-import { buildCombinedRankings, type TourResult } from "@/app/lib/rankings";
+import {
+  buildTourStandings,
+  type TourDisqualification,
+  type TourId,
+  type TourResult,
+} from "@/app/lib/rankings";
 import type { StandingsSource } from "@/app/lib/standings-store";
 
 type DraftStandings = {
@@ -46,9 +51,19 @@ export function AdminStandingsManager() {
   const [verified, setVerified] = useState(false);
   const [tour1Text, setTour1Text] = useState("");
   const [tour2Text, setTour2Text] = useState("");
-  const [qualificationCutoffText, setQualificationCutoffText] = useState(
+  const [activeTourId, setActiveTourId] = useState<TourId>("tour-1");
+  const [tour1CutoffText, setTour1CutoffText] = useState(
     String(defaultQualificationCutoff),
   );
+  const [tour2CutoffText, setTour2CutoffText] = useState(
+    String(defaultQualificationCutoff),
+  );
+  const [tour1DisqualifiedHandles, setTour1DisqualifiedHandles] = useState("");
+  const [tour2DisqualifiedHandles, setTour2DisqualifiedHandles] = useState("");
+  const [tour1DisqualificationReason, setTour1DisqualificationReason] =
+    useState("");
+  const [tour2DisqualificationReason, setTour2DisqualificationReason] =
+    useState("");
   const [draftStandings, setDraftStandings] = useState<DraftStandings | null>(
     null,
   );
@@ -59,35 +74,47 @@ export function AdminStandingsManager() {
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [loadingCodeforces, setLoadingCodeforces] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [savingTourId, setSavingTourId] = useState<TourId | null>(null);
   const [verifying, setVerifying] = useState(false);
   const activeCodeforcesRequestId = useRef(0);
 
-  const qualificationCutoff = parseQualificationCutoff(
-    qualificationCutoffText,
+  const tour1Cutoff = parseQualificationCutoff(tour1CutoffText);
+  const tour2Cutoff = parseQualificationCutoff(tour2CutoffText);
+  const tour1Disqualifications = parseDisqualifications(
+    tour1DisqualifiedHandles,
+    tour1DisqualificationReason,
   );
-  const effectiveQualificationCutoff =
-    qualificationCutoff ?? defaultQualificationCutoff;
-  const combinedRankings = useMemo(
-    () =>
-      buildCombinedRankings(
-        draftStandings?.tour1 ?? [],
-        draftStandings?.tour2 ?? [],
-        effectiveQualificationCutoff,
-      ),
-    [draftStandings, effectiveQualificationCutoff],
+  const tour2Disqualifications = parseDisqualifications(
+    tour2DisqualifiedHandles,
+    tour2DisqualificationReason,
   );
-  const qualifiedCount = combinedRankings.filter((row) => row.qualified).length;
-  const cutoffErrorMessage =
-    qualificationCutoff === null ? qualificationCutoffError : null;
-  const canSave =
-    draftStatus === "valid" &&
-    draftStandings !== null &&
-    cutoffErrorMessage === null &&
-    !loadingCodeforces &&
-    !saving;
+  const activeCutoff =
+    activeTourId === "tour-1"
+      ? (tour1Cutoff ?? defaultQualificationCutoff)
+      : (tour2Cutoff ?? defaultQualificationCutoff);
+  const activeRows =
+    activeTourId === "tour-1"
+      ? (draftStandings?.tour1 ?? [])
+      : (draftStandings?.tour2 ?? []);
+  const activeDisqualifications =
+    activeTourId === "tour-1" ? tour1Disqualifications : tour2Disqualifications;
+  const activeRankings = buildTourStandings({
+    rows: activeRows,
+    qualificationCutoff: activeCutoff,
+    disqualifications: activeDisqualifications,
+  });
+  const activeQualifiedCount = activeRankings.filter(
+    (row) => row.qualified,
+  ).length;
+  const activeDisqualifiedCount = activeRankings.filter(
+    (row) => row.disqualified,
+  ).length;
+  const activeCutoffErrorMessage =
+    (activeTourId === "tour-1" ? tour1Cutoff : tour2Cutoff) === null
+      ? qualificationCutoffError
+      : null;
   const displayedErrorMessage =
-    cutoffErrorMessage ?? loadErrorMessage ?? saveErrorMessage;
+    activeCutoffErrorMessage ?? loadErrorMessage ?? saveErrorMessage;
 
   async function verifyPassword() {
     setVerifying(true);
@@ -126,8 +153,18 @@ export function AdminStandingsManager() {
     setSaveErrorMessage(null);
 
     try {
-      const importedTour1 = parseTourStandings("Tour 1", tour1Text);
-      const importedTour2 = parseTourStandings("Tour 2", tour2Text);
+      const importedTour1 =
+        tour1Text.trim().length > 0
+          ? parseTourStandings("Tour 1", tour1Text)
+          : [];
+      const importedTour2 =
+        tour2Text.trim().length > 0
+          ? parseTourStandings("Tour 2", tour2Text)
+          : [];
+
+      if (importedTour1.length === 0 && importedTour2.length === 0) {
+        throw new Error("Enter standings for Tour 1, Tour 2, or both.");
+      }
 
       setDraftStandings({
         label: "Manual import",
@@ -250,18 +287,25 @@ export function AdminStandingsManager() {
     }
   }
 
-  async function saveSnapshot() {
+  async function saveSnapshot(tourId: TourId) {
+    const qualificationCutoff =
+      tourId === "tour-1" ? tour1Cutoff : tour2Cutoff;
+    const rows =
+      tourId === "tour-1" ? draftStandings?.tour1 : draftStandings?.tour2;
+    const disqualifications =
+      tourId === "tour-1" ? tour1Disqualifications : tour2Disqualifications;
+
     if (qualificationCutoff === null) {
       setSaveErrorMessage(qualificationCutoffError);
       return;
     }
 
-    if (draftStatus !== "valid" || !draftStandings) {
+    if (draftStatus !== "valid" || !draftStandings || !rows) {
       setSaveErrorMessage("Load standings into preview before saving.");
       return;
     }
 
-    setSaving(true);
+    setSavingTourId(tourId);
     setSaveErrorMessage(null);
 
     try {
@@ -272,10 +316,11 @@ export function AdminStandingsManager() {
           "content-type": "application/json",
         },
         body: JSON.stringify({
+          tourId,
           source: draftStandings.source,
-          tour1: draftStandings.tour1,
-          tour2: draftStandings.tour2,
+          rows,
           qualificationCutoff,
+          disqualifications,
         }),
       });
       const payload = (await response.json()) as SaveSnapshotResponse;
@@ -289,7 +334,7 @@ export function AdminStandingsManager() {
       }
 
       setStatusMessage(
-        `Saved standings snapshot at ${new Date(
+        `Saved ${formatTourLabel(tourId)} standings at ${new Date(
           payload.snapshot.updatedAt,
         ).toLocaleString()}.`,
       );
@@ -300,7 +345,7 @@ export function AdminStandingsManager() {
           : "Unable to save standings snapshot.",
       );
     } finally {
-      setSaving(false);
+      setSavingTourId(null);
     }
   }
 
@@ -328,14 +373,15 @@ export function AdminStandingsManager() {
 
   return (
     <RankingsView
-      description="Load, preview, and publish the standings snapshot shown on the public site."
-      qualificationCutoff={effectiveQualificationCutoff}
-      qualifiedStatLabel="Qualified contestants"
-      qualifiedStatValue={`${qualifiedCount} / Top ${effectiveQualificationCutoff}`}
-      rankings={combinedRankings}
+      description="Load, preview, and publish each tour standings snapshot."
+      disqualifiedStatValue={activeDisqualifiedCount}
+      qualificationCutoff={activeCutoff}
+      qualifiedStatLabel="Qualified"
+      qualifiedStatValue={activeQualifiedCount}
+      rankings={activeRankings}
       showSourceStat={draftStandings !== null}
       sourceLabel={draftStandings?.label}
-      title="Admin standings"
+      title={`Admin ${formatTourLabel(activeTourId)} preview`}
     >
       <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 p-4">
@@ -394,23 +440,47 @@ export function AdminStandingsManager() {
                 Do not spam refresh. Codeforces API is rate-limited.
               </p>
 
-              <label className="flex w-full flex-col gap-1 sm:max-w-xs">
-                <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
-                  Qualification cutoff
-                </span>
-                <input
-                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
-                  inputMode="numeric"
-                  min={1}
-                  step={1}
-                  type="number"
-                  value={qualificationCutoffText}
-                  onChange={(event) => {
-                    setSaveErrorMessage(null);
-                    setQualificationCutoffText(event.target.value);
-                  }}
+              <div className="inline-flex h-10 w-full overflow-hidden rounded-md border border-slate-300 bg-white p-0.5 sm:w-fit">
+                <button
+                  className={tabButtonClass(activeTourId === "tour-1")}
+                  type="button"
+                  onClick={() => setActiveTourId("tour-1")}
+                >
+                  Tour 1
+                </button>
+                <button
+                  className={tabButtonClass(activeTourId === "tour-2")}
+                  type="button"
+                  onClick={() => setActiveTourId("tour-2")}
+                >
+                  Tour 2
+                </button>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <TourSettings
+                  cutoffText={tour1CutoffText}
+                  disqualifiedHandles={tour1DisqualifiedHandles}
+                  disqualificationReason={tour1DisqualificationReason}
+                  label="Tour 1 controls"
+                  onCutoffChange={setTour1CutoffText}
+                  onDisqualificationReasonChange={
+                    setTour1DisqualificationReason
+                  }
+                  onDisqualifiedHandlesChange={setTour1DisqualifiedHandles}
                 />
-              </label>
+                <TourSettings
+                  cutoffText={tour2CutoffText}
+                  disqualifiedHandles={tour2DisqualifiedHandles}
+                  disqualificationReason={tour2DisqualificationReason}
+                  label="Tour 2 controls"
+                  onCutoffChange={setTour2CutoffText}
+                  onDisqualificationReasonChange={
+                    setTour2DisqualificationReason
+                  }
+                  onDisqualifiedHandlesChange={setTour2DisqualifiedHandles}
+                />
+              </div>
 
               <div className="flex flex-col gap-2 sm:flex-row">
                 <button
@@ -432,11 +502,19 @@ export function AdminStandingsManager() {
                 </button>
                 <button
                   className="h-10 rounded-md border border-emerald-700 bg-emerald-700 px-4 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border-emerald-300 disabled:bg-emerald-300"
-                  disabled={!canSave}
+                  disabled={!canSaveTour("tour-1")}
                   type="button"
-                  onClick={saveSnapshot}
+                  onClick={() => saveSnapshot("tour-1")}
                 >
-                  {saving ? "Saving" : "Save standings snapshot"}
+                  {savingTourId === "tour-1" ? "Publishing" : "Publish Tour 1"}
+                </button>
+                <button
+                  className="h-10 rounded-md border border-emerald-700 bg-emerald-700 px-4 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border-emerald-300 disabled:bg-emerald-300"
+                  disabled={!canSaveTour("tour-2")}
+                  type="button"
+                  onClick={() => saveSnapshot("tour-2")}
+                >
+                  {savingTourId === "tour-2" ? "Publishing" : "Publish Tour 2"}
                 </button>
                 <button
                   className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-slate-950"
@@ -463,6 +541,22 @@ export function AdminStandingsManager() {
       </section>
     </RankingsView>
   );
+
+  function canSaveTour(tourId: TourId) {
+    const cutoff = tourId === "tour-1" ? tour1Cutoff : tour2Cutoff;
+    const rows =
+      tourId === "tour-1" ? draftStandings?.tour1 : draftStandings?.tour2;
+
+    return (
+      draftStatus === "valid" &&
+      draftStandings !== null &&
+      cutoff !== null &&
+      rows !== undefined &&
+      rows.length > 0 &&
+      !loadingCodeforces &&
+      savingTourId === null
+    );
+  }
 }
 
 function adminHeaders(password: string) {
@@ -494,6 +588,26 @@ function parseQualificationCutoff(value: string) {
   return Number.isSafeInteger(parsedValue) && parsedValue >= 1
     ? parsedValue
     : null;
+}
+
+function parseDisqualifications(
+  handlesText: string,
+  reasonText: string,
+): TourDisqualification[] {
+  const reason = reasonText.trim();
+
+  return handlesText
+    .split(/[\n,]+/)
+    .map((handle) => handle.trim())
+    .filter((handle) => handle.length > 0)
+    .map((handle) => ({
+      handle,
+      ...(reason.length > 0 ? { reason } : {}),
+    }));
+}
+
+function formatTourLabel(tourId: TourId) {
+  return tourId === "tour-1" ? "Tour 1" : "Tour 2";
 }
 
 function StandingsInput({
@@ -535,4 +649,80 @@ function StandingsInput({
       />
     </div>
   );
+}
+
+function TourSettings({
+  cutoffText,
+  disqualifiedHandles,
+  disqualificationReason,
+  label,
+  onCutoffChange,
+  onDisqualifiedHandlesChange,
+  onDisqualificationReasonChange,
+}: {
+  cutoffText: string;
+  disqualifiedHandles: string;
+  disqualificationReason: string;
+  label: string;
+  onCutoffChange: (value: string) => void;
+  onDisqualifiedHandlesChange: (value: string) => void;
+  onDisqualificationReasonChange: (value: string) => void;
+}) {
+  return (
+    <fieldset className="grid gap-3 rounded-lg border border-slate-200 p-3">
+      <legend className="px-1 text-sm font-semibold text-slate-800">
+        {label}
+      </legend>
+
+      <label className="flex w-full flex-col gap-1 sm:max-w-xs">
+        <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+          Qualification cutoff
+        </span>
+        <input
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+          inputMode="numeric"
+          min={1}
+          step={1}
+          type="number"
+          value={cutoffText}
+          onChange={(event) => onCutoffChange(event.target.value)}
+        />
+      </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+          Disqualified handles
+        </span>
+        <textarea
+          className="min-h-24 resize-y rounded-md border border-slate-300 bg-white p-3 font-mono text-sm leading-6 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+          placeholder="one handle per line"
+          value={disqualifiedHandles}
+          onChange={(event) => onDisqualifiedHandlesChange(event.target.value)}
+        />
+      </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+          Disqualification reason
+        </span>
+        <input
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+          type="text"
+          value={disqualificationReason}
+          onChange={(event) =>
+            onDisqualificationReasonChange(event.target.value)
+          }
+        />
+      </label>
+    </fieldset>
+  );
+}
+
+function tabButtonClass(active: boolean) {
+  return [
+    "flex-1 whitespace-nowrap rounded px-3 text-sm font-medium transition sm:flex-none",
+    active
+      ? "bg-slate-950 text-white shadow-sm"
+      : "text-slate-600 hover:bg-slate-100 hover:text-slate-950",
+  ].join(" ");
 }

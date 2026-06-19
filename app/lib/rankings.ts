@@ -1,3 +1,5 @@
+export type TourId = "tour-1" | "tour-2";
+
 export type TourResult = {
   handle: string;
   score: number;
@@ -5,97 +7,124 @@ export type TourResult = {
   official: boolean;
 };
 
-export type RankedParticipant = {
-  rank: number;
+export type TourDisqualification = {
   handle: string;
-  tour1Score: number;
-  tour1Penalty: number;
-  tour2Score: number;
-  tour2Penalty: number;
-  totalScore: number;
-  totalPenalty: number;
-  qualified: boolean;
-  status: "Qualified" | "Not qualified";
+  reason?: string;
 };
 
-type ParticipantAccumulator = Omit<
-  RankedParticipant,
-  "rank" | "qualified" | "status" | "totalScore" | "totalPenalty"
->;
+export type RankedTourRow = {
+  rank: number;
+  handle: string;
+  score: number;
+  penalty: number;
+  qualified: boolean;
+  disqualified: boolean;
+  status: "Qualified" | "Not qualified" | "Disqualified";
+  disqualificationReason?: string;
+};
 
 const collator = new Intl.Collator("en", {
   numeric: true,
   sensitivity: "base",
 });
 
-export function buildCombinedRankings(
-  tour1: TourResult[],
-  tour2: TourResult[],
+export function buildTourStandings({
+  rows,
   qualificationCutoff = 20,
-): RankedParticipant[] {
-  const participants = new Map<string, ParticipantAccumulator>();
+  disqualifications = [],
+}: {
+  rows: TourResult[];
+  qualificationCutoff?: number;
+  disqualifications?: TourDisqualification[];
+}): RankedTourRow[] {
+  const disqualificationReasons = new Map(
+    disqualifications.map((disqualification) => [
+      normalizeHandle(disqualification.handle),
+      disqualification.reason?.trim() || undefined,
+    ]),
+  );
 
-  addTourResults(participants, tour1, "tour1");
-  addTourResults(participants, tour2, "tour2");
-
-  return Array.from(participants.values())
-    .map((participant) => ({
-      ...participant,
-      totalScore: participant.tour1Score + participant.tour2Score,
-      totalPenalty: participant.tour1Penalty + participant.tour2Penalty,
-    }))
+  return deduplicateRows(rows)
     .sort((a, b) => {
-      if (a.totalScore !== b.totalScore) {
-        return b.totalScore - a.totalScore;
+      if (a.score !== b.score) {
+        return b.score - a.score;
       }
 
-      if (a.totalPenalty !== b.totalPenalty) {
-        return a.totalPenalty - b.totalPenalty;
+      if (a.penalty !== b.penalty) {
+        return a.penalty - b.penalty;
       }
 
       return collator.compare(a.handle, b.handle);
     })
-    .map((participant, index) => {
-      const qualified = index < qualificationCutoff;
+    .map((row, index) => {
+      const rank = index + 1;
+      const disqualificationReason = disqualificationReasons.get(
+        normalizeHandle(row.handle),
+      );
+      const disqualified = disqualificationReasons.has(normalizeHandle(row.handle));
+      const qualified = rank <= qualificationCutoff && !disqualified;
 
       return {
-        ...participant,
-        rank: index + 1,
+        ...row,
+        rank,
         qualified,
-        status: qualified ? "Qualified" : "Not qualified",
+        disqualified,
+        status: disqualified
+          ? "Disqualified"
+          : qualified
+            ? "Qualified"
+            : "Not qualified",
+        ...(disqualificationReason
+          ? { disqualificationReason }
+          : {}),
       };
     });
 }
 
-function addTourResults(
-  participants: Map<string, ParticipantAccumulator>,
-  results: TourResult[],
-  tour: "tour1" | "tour2",
-) {
-  for (const result of results) {
-    const handle = result.handle.trim();
+function deduplicateRows(rows: TourResult[]) {
+  const bestRows = new Map<
+    string,
+    {
+      handle: string;
+      score: number;
+      penalty: number;
+    }
+  >();
 
-    if (!result.official || handle.length === 0) {
+  for (const row of rows) {
+    const handle = row.handle.trim();
+
+    if (!row.official || handle.length === 0) {
       continue;
     }
 
-    const key = handle.toLowerCase();
-    const participant = participants.get(key) ?? {
+    const key = normalizeHandle(handle);
+    const existingRow = bestRows.get(key);
+    const nextRow = {
       handle,
-      tour1Score: 0,
-      tour1Penalty: 0,
-      tour2Score: 0,
-      tour2Penalty: 0,
+      score: row.score,
+      penalty: row.penalty,
     };
 
-    if (tour === "tour1") {
-      participant.tour1Score = result.score;
-      participant.tour1Penalty = result.penalty;
-    } else {
-      participant.tour2Score = result.score;
-      participant.tour2Penalty = result.penalty;
+    if (!existingRow || isBetterRow(nextRow, existingRow)) {
+      bestRows.set(key, nextRow);
     }
-
-    participants.set(key, participant);
   }
+
+  return Array.from(bestRows.values());
+}
+
+function isBetterRow(
+  candidate: { score: number; penalty: number },
+  current: { score: number; penalty: number },
+) {
+  if (candidate.score !== current.score) {
+    return candidate.score > current.score;
+  }
+
+  return candidate.penalty < current.penalty;
+}
+
+function normalizeHandle(handle: string) {
+  return handle.trim().toLowerCase();
 }

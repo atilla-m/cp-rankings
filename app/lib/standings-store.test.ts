@@ -6,90 +6,263 @@ import { test } from "node:test";
 import { POST } from "@/app/api/admin/standings/route";
 import { GET } from "@/app/api/standings/route";
 import {
-  getPublishedStandingsResponse,
-  readPublishedStandings,
+  getPublishedTourStandingsResponse,
+  readPublishedTourStandings,
   resetStandingsStoreForTests,
-  savePublishedStandings,
+  savePublishedTourStandings,
   setStandingsRedisClientForTests,
 } from "./standings-store";
 
-test("returns an empty state when no published standings exist", async () => {
+test("returns an empty state when no tour standings exist", async () => {
   await withMockRedisStore(async () => {
-    assert.deepEqual(await getPublishedStandingsResponse(), {
+    assert.deepEqual(await getPublishedTourStandingsResponse("tour-1"), {
       status: "empty",
-      message: "Standings have not been published yet.",
+      message: "Tour 1 standings have not been published yet.",
       snapshot: null,
     });
   });
 });
 
-test("saves published standings to Redis with combined rankings", async () => {
+test("saves Tour 1 and Tour 2 standings to separate Redis keys", async () => {
   await withMockRedisStore(async (redis) => {
-    const snapshot = await savePublishedStandings({
+    const tour1 = await savePublishedTourStandings({
+      tourId: "tour-1",
       source: "manual",
-      tour1: [{ handle: " tourist ", score: 500, penalty: 120, official: true }],
-      tour2: [{ handle: "Benq", score: 400, penalty: 90, official: true }],
+      rows: [{ handle: " tourist ", score: 500, penalty: 120, official: true }],
       qualificationCutoff: 30,
     });
+    const tour2 = await savePublishedTourStandings({
+      tourId: "tour-2",
+      source: "codeforces",
+      rows: [{ handle: "Benq", score: 400, penalty: 90, official: true }],
+      qualificationCutoff: 10,
+    });
 
-    assert.equal(snapshot.source, "manual");
-    assert.equal(snapshot.qualificationCutoff, 30);
-    assert.equal(typeof snapshot.updatedAt, "string");
-    assert.equal(snapshot.tour1[0].handle, "tourist");
-    assert.deepEqual(
-      snapshot.combinedRankings.map((participant) => participant.handle),
-      ["tourist", "Benq"],
-    );
+    assert.equal(tour1.tourId, "tour-1");
+    assert.equal(tour1.rows[0].handle, "tourist");
+    assert.equal(tour1.qualificationCutoff, 30);
+    assert.equal(tour2.tourId, "tour-2");
+    assert.equal(tour2.qualificationCutoff, 10);
 
-    const storedSnapshot = redis.peek("published-standings");
-
-    assert.equal(storedSnapshot?.source, "manual");
-    assert.equal(storedSnapshot?.qualificationCutoff, 30);
-    assert.deepEqual(
-      storedSnapshot?.combinedRankings.map((participant) => participant.handle),
-      ["tourist", "Benq"],
-    );
+    assert.equal(redis.peek("standings:tour-1")?.tourId, "tour-1");
+    assert.equal(redis.peek("standings:tour-2")?.tourId, "tour-2");
+    assert.equal(redis.peek("published-standings"), null);
   });
 });
 
-test("loads published standings from Redis", async () => {
+test("loads published tour standings from Redis", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("standings:tour-1", {
+      tourId: "tour-1",
+      source: "codeforces",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      rows: [{ handle: "tourist", score: 500, penalty: 120, official: true }],
+      rankedRows: [],
+      qualificationCutoff: 30,
+      disqualifications: [],
+    });
+
+    const loaded = await readPublishedTourStandings("tour-1");
+
+    assert.equal(loaded?.source, "codeforces");
+    assert.equal(loaded?.qualificationCutoff, 30);
+    assert.equal(loaded?.rankedRows[0].score, 500);
+  });
+});
+
+test("existing tour key wins over legacy standings data", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("standings:tour-1", {
+      tourId: "tour-1",
+      source: "manual",
+      updatedAt: "2026-06-11T00:00:00.000Z",
+      rows: [{ handle: "new-tourist", score: 900, penalty: 1, official: true }],
+      rankedRows: [],
+      qualificationCutoff: 5,
+      disqualifications: [],
+    });
+    redis.seed("published-standings", {
+      source: "codeforces",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      tour1: [{ handle: "legacy-tourist", score: 500, penalty: 120, official: true }],
+      tour2: [{ handle: "legacy-tour2", score: 400, penalty: 90, official: true }],
+      qualificationCutoff: 20,
+    });
+
+    const loaded = await readPublishedTourStandings("tour-1");
+
+    assert.equal(loaded?.rows[0].handle, "new-tourist");
+    assert.equal(loaded?.qualificationCutoff, 5);
+    assert.equal(loaded?.source, "manual");
+  });
+});
+
+test("missing Tour 1 key falls back to legacy tour1 and lazily migrates", async () => {
   await withMockRedisStore(async (redis) => {
     redis.seed("published-standings", {
       source: "codeforces",
       updatedAt: "2026-06-10T00:00:00.000Z",
-      tour1: [{ handle: "tourist", score: 500, penalty: 120, official: true }],
-      tour2: [{ handle: "tourist", score: 300, penalty: 90, official: true }],
-      combinedRankings: [],
-      qualificationCutoff: 30,
+      tour1: [{ handle: "legacy-tourist", score: 500, penalty: 120, official: true }],
+      tour2: [{ handle: "legacy-tour2", score: 400, penalty: 90, official: true }],
+      qualificationCutoff: 12,
     });
 
-    const loaded = await readPublishedStandings();
+    const loaded = await readPublishedTourStandings("tour-1");
 
-    assert.equal(loaded?.source, "codeforces");
-    assert.equal(loaded?.qualificationCutoff, 30);
-    assert.equal(loaded?.combinedRankings[0].totalScore, 800);
+    assert.equal(loaded?.tourId, "tour-1");
+    assert.equal(loaded?.rows[0].handle, "legacy-tourist");
+    assert.equal(loaded?.rankedRows[0].status, "Qualified");
+    assert.equal(loaded?.qualificationCutoff, 12);
+    assert.equal(redis.peek("standings:tour-1")?.rows[0].handle, "legacy-tourist");
+    assert.notEqual(redis.peek("published-standings"), null);
   });
 });
 
-test("old published standings snapshots fall back to a top 20 cutoff", async () => {
+test("missing Tour 2 key falls back to legacy tour2 and lazily migrates", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("published-standings", {
+      source: "manual",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      tour1: [{ handle: "legacy-tour1", score: 500, penalty: 120, official: true }],
+      tour2: [{ handle: "legacy-tour2", score: 400, penalty: 90, official: true }],
+      qualificationCutoff: 8,
+    });
+
+    const loaded = await readPublishedTourStandings("tour-2");
+
+    assert.equal(loaded?.tourId, "tour-2");
+    assert.equal(loaded?.rows[0].handle, "legacy-tour2");
+    assert.equal(loaded?.qualificationCutoff, 8);
+    assert.equal(redis.peek("standings:tour-2")?.rows[0].handle, "legacy-tour2");
+  });
+});
+
+test("legacy snapshot without qualificationCutoff defaults to top 20", async () => {
   await withMockRedisStore(async (redis) => {
     redis.seed("published-standings", {
       source: "manual",
       updatedAt: "2026-06-10T00:00:00.000Z",
       tour1: makeRankedTourResults(21),
       tour2: [],
-      combinedRankings: [],
     });
 
-    const loaded = await readPublishedStandings();
+    const loaded = await readPublishedTourStandings("tour-1");
 
     assert.equal(loaded?.qualificationCutoff, 20);
     assert.equal(
-      loaded?.combinedRankings.filter((participant) => participant.qualified)
-        .length,
+      loaded?.rankedRows.filter((participant) => participant.qualified).length,
       20,
     );
-    assert.equal(loaded?.combinedRankings[20].status, "Not qualified");
+  });
+});
+
+test("legacy fallback preserves source and updatedAt when available", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("published-standings", {
+      source: "codeforces",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      tour1: [{ handle: "legacy-tourist", score: 500, penalty: 120, official: true }],
+      tour2: [],
+    });
+
+    const loaded = await readPublishedTourStandings("tour-1");
+
+    assert.equal(loaded?.source, "codeforces");
+    assert.equal(loaded?.updatedAt, "2026-06-10T00:00:00.000Z");
+  });
+});
+
+test("legacy fallback uses legacy source when source is missing", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("published-standings", {
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      tour1: [{ handle: "legacy-tourist", score: 500, penalty: 120, official: true }],
+      tour2: [],
+    });
+
+    const loaded = await readPublishedTourStandings("tour-1");
+
+    assert.equal(loaded?.source, "legacy");
+  });
+});
+
+test("snapshots without qualificationCutoff fall back to top 20", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("standings:tour-1", {
+      tourId: "tour-1",
+      source: "manual",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      rows: makeRankedTourResults(21),
+      rankedRows: [],
+      disqualifications: [],
+    });
+
+    const loaded = await readPublishedTourStandings("tour-1");
+
+    assert.equal(loaded?.qualificationCutoff, 20);
+    assert.equal(
+      loaded?.rankedRows.filter((participant) => participant.qualified).length,
+      20,
+    );
+    assert.equal(loaded?.rankedRows[20].status, "Not qualified");
+  });
+});
+
+test("snapshots without disqualifications default to none", async () => {
+  await withMockRedisStore(async (redis) => {
+    redis.seed("standings:tour-1", {
+      tourId: "tour-1",
+      source: "manual",
+      updatedAt: "2026-06-10T00:00:00.000Z",
+      rows: makeRankedTourResults(1),
+      rankedRows: [],
+      qualificationCutoff: 20,
+    });
+
+    const loaded = await readPublishedTourStandings("tour-1");
+
+    assert.deepEqual(loaded?.disqualifications, []);
+    assert.equal(loaded?.rankedRows[0].status, "Qualified");
+  });
+});
+
+test("custom cutoff is applied", async () => {
+  await withMockRedisStore(async () => {
+    const snapshot = await savePublishedTourStandings({
+      tourId: "tour-1",
+      source: "manual",
+      rows: makeRankedTourResults(3),
+      qualificationCutoff: 2,
+    });
+
+    assert.equal(snapshot.qualificationCutoff, 2);
+    assert.deepEqual(
+      snapshot.rankedRows.map((participant) => participant.status),
+      ["Qualified", "Qualified", "Not qualified"],
+    );
+  });
+});
+
+test("disqualified contestant does not qualify but remains visible", async () => {
+  await withMockRedisStore(async () => {
+    const snapshot = await savePublishedTourStandings({
+      tourId: "tour-1",
+      source: "manual",
+      rows: makeRankedTourResults(3),
+      qualificationCutoff: 3,
+      disqualifications: [{ handle: "participant2", reason: "No show" }],
+    });
+
+    assert.deepEqual(
+      snapshot.rankedRows.map((participant) => participant.handle),
+      ["participant1", "participant2", "participant3"],
+    );
+    assert.equal(snapshot.rankedRows[1].qualified, false);
+    assert.equal(snapshot.rankedRows[1].status, "Disqualified");
+    assert.equal(snapshot.rankedRows[1].disqualificationReason, "No show");
+    assert.deepEqual(snapshot.disqualifications, [
+      { handle: "participant2", reason: "No show" },
+    ]);
   });
 });
 
@@ -104,7 +277,7 @@ test("production without Redis env returns a clear config error", async () => {
     },
     async () => {
       await assert.rejects(
-        getPublishedStandingsResponse,
+        () => getPublishedTourStandingsResponse("tour-1"),
         /UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required in production/,
       );
 
@@ -130,20 +303,63 @@ test("development without Redis env can use local fallback storage", async () =>
       UPSTASH_REDIS_REST_URL: undefined,
     },
     async () => {
-      await withPublishedStandingsFile(async () => {
-        const saved = await savePublishedStandings({
+      await withPublishedStandingsFiles(async () => {
+        const saved = await savePublishedTourStandings({
+          tourId: "tour-1",
           source: "manual",
-          tour1: [
+          rows: [
             { handle: "tourist", score: 500, penalty: 120, official: true },
           ],
-          tour2: [
-            { handle: "tourist", score: 300, penalty: 90, official: true },
-          ],
         });
-        const loaded = await readPublishedStandings();
+        const loaded = await readPublishedTourStandings("tour-1");
 
         assert.deepEqual(loaded, saved);
-        assert.equal(loaded?.combinedRankings[0].totalScore, 800);
+        assert.equal(loaded?.rankedRows[0].score, 500);
+      });
+    },
+  );
+});
+
+test("development local fallback migrates legacy published standings file", async () => {
+  resetStandingsStoreForTests();
+
+  await withEnv(
+    {
+      NODE_ENV: "development",
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+      UPSTASH_REDIS_REST_URL: undefined,
+    },
+    async () => {
+      await withPublishedStandingsFiles(async () => {
+        const legacyPath = path.join("data", "published-standings.json");
+        const migratedPath = path.join("data", "standings-tour-1.json");
+
+        await mkdir(path.dirname(legacyPath), { recursive: true });
+        await writeFile(
+          legacyPath,
+          `${JSON.stringify({
+            source: "manual",
+            updatedAt: "2026-06-10T00:00:00.000Z",
+            tour1: [
+              {
+                handle: "legacy-tourist",
+                score: 500,
+                penalty: 120,
+                official: true,
+              },
+            ],
+            tour2: [],
+          })}\n`,
+        );
+
+        const response = await getPublishedTourStandingsResponse("tour-1");
+        const migratedSnapshot = JSON.parse(
+          await readFile(migratedPath, "utf-8"),
+        ) as { rows: Array<{ handle: string }> };
+
+        assert.equal(response.status, "published");
+        assert.equal(response.snapshot.rows[0].handle, "legacy-tourist");
+        assert.equal(migratedSnapshot.rows[0].handle, "legacy-tourist");
       });
     },
   );
@@ -158,7 +374,7 @@ test("partial Redis env returns a clear config error", async () => {
     },
     async () => {
       await assert.rejects(
-        getPublishedStandingsResponse,
+        () => getPublishedTourStandingsResponse("tour-1"),
         /both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set/,
       );
     },
@@ -173,10 +389,10 @@ test("uses anonymous local fallback only outside production", async () => {
       UPSTASH_REDIS_REST_URL: undefined,
     },
     async () => {
-      await withPublishedStandingsFile(async () => {
-        assert.deepEqual(await getPublishedStandingsResponse(), {
+      await withPublishedStandingsFiles(async () => {
+        assert.deepEqual(await getPublishedTourStandingsResponse("tour-1"), {
           status: "empty",
-          message: "Standings have not been published yet.",
+          message: "Tour 1 standings have not been published yet.",
           snapshot: null,
         });
       });
@@ -186,18 +402,18 @@ test("uses anonymous local fallback only outside production", async () => {
 
 test("Redis is used when Upstash env vars are configured", async () => {
   await withMockRedisStore(async (redis) => {
-    await savePublishedStandings({
+    await savePublishedTourStandings({
+      tourId: "tour-1",
       source: "manual",
-      tour1: [{ handle: "tourist", score: 500, penalty: 120, official: true }],
-      tour2: [],
+      rows: [{ handle: "tourist", score: 500, penalty: 120, official: true }],
     });
 
-    assert.notEqual(redis.peek("published-standings"), null);
+    assert.notEqual(redis.peek("standings:tour-1"), null);
   });
 });
 
 test("admin password is required to save published standings", async () => {
-  await withPublishedStandingsFile(async () => {
+  await withPublishedStandingsFiles(async () => {
     const previousPassword = process.env.ADMIN_PASSWORD;
     process.env.ADMIN_PASSWORD = "secret";
 
@@ -209,9 +425,9 @@ test("admin password is required to save published standings", async () => {
             "content-type": "application/json",
           },
           body: JSON.stringify({
+            tourId: "tour-1",
             source: "manual",
-            tour1: [],
-            tour2: [],
+            rows: [],
           }),
         }),
       );
@@ -231,7 +447,7 @@ test("admin password is required to save published standings", async () => {
 
 type EnvOverrides = Record<string, string | undefined>;
 
-type StoredSnapshot = Awaited<ReturnType<typeof savePublishedStandings>>;
+type StoredSnapshot = Awaited<ReturnType<typeof savePublishedTourStandings>>;
 
 class MockRedisClient {
   private readonly values = new Map<string, unknown>();
@@ -310,20 +526,31 @@ async function withEnv(overrides: EnvOverrides, callback: () => Promise<void>) {
   }
 }
 
-async function withPublishedStandingsFile(callback: () => Promise<void>) {
-  const snapshotPath = path.join("data", "published-standings.json");
-  const previousSnapshot = await readExistingSnapshot(snapshotPath);
+async function withPublishedStandingsFiles(callback: () => Promise<void>) {
+  const snapshotPaths = [
+    path.join("data", "standings-tour-1.json"),
+    path.join("data", "standings-tour-2.json"),
+    path.join("data", "published-standings.json"),
+  ];
+  const previousSnapshots = new Map<string, Buffer | null>();
 
-  await rm(snapshotPath, { force: true });
+  for (const snapshotPath of snapshotPaths) {
+    previousSnapshots.set(snapshotPath, await readExistingSnapshot(snapshotPath));
+    await rm(snapshotPath, { force: true });
+  }
 
   try {
     await callback();
   } finally {
-    if (previousSnapshot === null) {
-      await rm(snapshotPath, { force: true });
-    } else {
-      await mkdir(path.dirname(snapshotPath), { recursive: true });
-      await writeFile(snapshotPath, previousSnapshot);
+    for (const snapshotPath of snapshotPaths) {
+      const previousSnapshot = previousSnapshots.get(snapshotPath) ?? null;
+
+      if (previousSnapshot === null) {
+        await rm(snapshotPath, { force: true });
+      } else {
+        await mkdir(path.dirname(snapshotPath), { recursive: true });
+        await writeFile(snapshotPath, previousSnapshot);
+      }
     }
   }
 }

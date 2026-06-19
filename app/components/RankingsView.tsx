@@ -1,32 +1,36 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { RankedParticipant } from "@/app/lib/rankings";
+import type { RankedTourRow } from "@/app/lib/rankings";
 
 type RankingsViewProps = {
   children?: React.ReactNode;
   description?: string;
+  disqualifiedStatValue?: number | string;
   qualificationCutoff?: number;
   qualifiedStatLabel?: string;
   qualifiedStatValue?: number | string;
-  rankings: RankedParticipant[];
+  rankings: RankedTourRow[];
   showSourceStat?: boolean;
   sourceLabel?: string;
   title?: string;
+  totalStatLabel?: string;
 };
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 
 export function RankingsView({
   children,
-  description = "Tour 1 and Tour 2 official standings for live round qualification.",
+  description = "Official standings for qualification.",
+  disqualifiedStatValue,
   qualificationCutoff = 20,
   qualifiedStatLabel = "Qualified",
   qualifiedStatValue,
   rankings,
   showSourceStat = false,
   sourceLabel,
-  title = "Combined rankings",
+  title = "Standings",
+  totalStatLabel = "Contestants",
 }: RankingsViewProps) {
   const [query, setQuery] = useState("");
   const [qualifiedOnly, setQualifiedOnly] = useState(false);
@@ -47,6 +51,9 @@ export function RankingsView({
   const qualifiedCount = rankings.filter(
     (participant) => participant.qualified,
   ).length;
+  const disqualifiedCount = rankings.filter(
+    (participant) => participant.disqualified,
+  ).length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -62,14 +69,18 @@ export function RankingsView({
           </div>
 
           <dl
-            className={`grid grid-cols-2 gap-2 text-sm sm:min-w-96 ${
-              showSourceStat ? "sm:grid-cols-4" : "sm:grid-cols-3"
+            className={`grid grid-cols-2 gap-2 text-sm sm:min-w-[32rem] ${
+              showSourceStat ? "sm:grid-cols-5" : "sm:grid-cols-4"
             }`}
           >
-            <Stat label="Official" value={rankings.length} />
+            <Stat label={totalStatLabel} value={rankings.length} />
             <Stat
               label={qualifiedStatLabel}
               value={qualifiedStatValue ?? qualifiedCount}
+            />
+            <Stat
+              label="Disqualified"
+              value={disqualifiedStatValue ?? disqualifiedCount}
             />
             <Stat label="Cutoff" value={`Top ${qualificationCutoff}`} />
             {showSourceStat && sourceLabel ? (
@@ -114,18 +125,15 @@ export function RankingsView({
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[760px] border-collapse text-left text-sm">
               <thead className="bg-slate-100 text-xs uppercase tracking-[0.08em] text-slate-600">
                 <tr>
                   <TableHead>Rank</TableHead>
                   <TableHead>Handle</TableHead>
-                  <TableHead numeric>Tour 1 score</TableHead>
-                  <TableHead numeric>Tour 1 penalty</TableHead>
-                  <TableHead numeric>Tour 2 score</TableHead>
-                  <TableHead numeric>Tour 2 penalty</TableHead>
-                  <TableHead numeric>Total score</TableHead>
-                  <TableHead numeric>Total penalty</TableHead>
+                  <TableHead numeric>Score</TableHead>
+                  <TableHead numeric>Penalty</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Reason</TableHead>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -141,33 +149,22 @@ export function RankingsView({
                       </span>
                     </TableCell>
                     <TableCell numeric>
-                      {formatNumber(participant.tour1Score)}
+                      {formatNumber(participant.score)}
                     </TableCell>
                     <TableCell numeric>
-                      {formatNumber(participant.tour1Penalty)}
-                    </TableCell>
-                    <TableCell numeric>
-                      {formatNumber(participant.tour2Score)}
-                    </TableCell>
-                    <TableCell numeric>
-                      {formatNumber(participant.tour2Penalty)}
-                    </TableCell>
-                    <TableCell numeric strong>
-                      {formatNumber(participant.totalScore)}
-                    </TableCell>
-                    <TableCell numeric>
-                      {formatNumber(participant.totalPenalty)}
+                      {formatNumber(participant.penalty)}
                     </TableCell>
                     <TableCell>
-                      <span
-                        className={
-                          participant.qualified
-                            ? "inline-flex rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200"
-                            : "inline-flex rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200"
-                        }
-                      >
-                        {participant.status}
-                      </span>
+                      <StatusBadge status={participant.status} />
+                    </TableCell>
+                    <TableCell>
+                      {participant.disqualificationReason ? (
+                        <span className="text-slate-700">
+                          {participant.disqualificationReason}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
                     </TableCell>
                   </tr>
                 ))}
@@ -194,6 +191,23 @@ function Stat({ label, value }: { label: string; value: number | string }) {
       </dt>
       <dd className="mt-1 text-lg font-semibold text-slate-950">{value}</dd>
     </div>
+  );
+}
+
+function StatusBadge({ status }: { status: RankedTourRow["status"] }) {
+  const className =
+    status === "Qualified"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : status === "Disqualified"
+        ? "bg-red-50 text-red-700 ring-red-200"
+        : "bg-slate-100 text-slate-600 ring-slate-200";
+
+  return (
+    <span
+      className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ring-1 ${className}`}
+    >
+      {status}
+    </span>
   );
 }
 

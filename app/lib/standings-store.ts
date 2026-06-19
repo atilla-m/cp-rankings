@@ -1,44 +1,49 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { Redis } from "@upstash/redis";
 import {
-  buildCombinedRankings,
-  type RankedParticipant,
+  buildTourStandings,
+  type RankedTourRow,
+  type TourDisqualification,
+  type TourId,
   type TourResult,
 } from "@/app/lib/rankings";
 
-const PUBLISHED_STANDINGS_PATH = path.join("data", "published-standings.json");
-const PUBLISHED_STANDINGS_REDIS_KEY = "published-standings";
 const DEFAULT_QUALIFICATION_CUTOFF = 20;
+const TOUR_STANDINGS_REDIS_KEYS: Record<TourId, string> = {
+  "tour-1": "standings:tour-1",
+  "tour-2": "standings:tour-2",
+};
+const LEGACY_PUBLISHED_STANDINGS_REDIS_KEY = "published-standings";
 
 type SnapshotRedisClient = {
   get: (key: string) => Promise<unknown | null>;
-  set: (key: string, value: PublishedStandingsSnapshot) => Promise<unknown>;
+  set: (key: string, value: PublishedTourStandingsSnapshot) => Promise<unknown>;
 };
 
 let redisClient: SnapshotRedisClient | null = null;
 let redisClientConfigKey: string | null = null;
 let redisClientOverride: SnapshotRedisClient | null = null;
 
-export type StandingsSource = "manual" | "codeforces";
+export type StandingsSource = "manual" | "codeforces" | "legacy";
 
-export type PublishedStandingsSnapshot = {
-  tour1: TourResult[];
-  tour2: TourResult[];
-  combinedRankings: RankedParticipant[];
+export type PublishedTourStandingsSnapshot = {
+  tourId: TourId;
+  rows: TourResult[];
+  rankedRows: RankedTourRow[];
   qualificationCutoff: number;
+  disqualifications: TourDisqualification[];
   source: StandingsSource;
   updatedAt: string;
 };
 
-export type SavePublishedStandingsInput = {
-  tour1: TourResult[];
-  tour2: TourResult[];
+export type SavePublishedTourStandingsInput = {
+  tourId: TourId;
+  rows: TourResult[];
   qualificationCutoff?: number;
+  disqualifications?: TourDisqualification[];
   source: StandingsSource;
 };
 
-export type StandingsApiResponse =
+export type TourStandingsApiResponse =
   | {
       status: "empty";
       message: string;
@@ -46,16 +51,18 @@ export type StandingsApiResponse =
     }
   | {
       status: "published";
-      snapshot: PublishedStandingsSnapshot;
+      snapshot: PublishedTourStandingsSnapshot;
     };
 
-export async function getPublishedStandingsResponse(): Promise<StandingsApiResponse> {
-  const snapshot = await readPublishedStandings();
+export async function getPublishedTourStandingsResponse(
+  tourId: TourId,
+): Promise<TourStandingsApiResponse> {
+  const snapshot = await readPublishedTourStandings(tourId);
 
   if (!snapshot) {
     return {
       status: "empty",
-      message: "Standings have not been published yet.",
+      message: `${formatTourLabel(tourId)} standings have not been published yet.`,
       snapshot: null,
     };
   }
@@ -66,33 +73,62 @@ export async function getPublishedStandingsResponse(): Promise<StandingsApiRespo
   };
 }
 
-export async function readPublishedStandings() {
-  const store = getPublishedStandingsStore();
+export async function readPublishedTourStandings(tourId: TourId) {
+  const validatedTourId = validateTourId(tourId);
+  const store = getPublishedTourStandingsStore(validatedTourId);
   const storedSnapshot = await store.read();
 
-  if (storedSnapshot === null) {
+  if (storedSnapshot !== null) {
+    return parsePublishedTourStandingsSnapshot(
+      parseStoredSnapshot(storedSnapshot),
+      validatedTourId,
+    );
+  }
+
+  const legacySnapshot = await store.readLegacy();
+
+  if (legacySnapshot === null) {
     return null;
   }
 
-  return parsePublishedStandingsSnapshot(parseStoredSnapshot(storedSnapshot));
+  const migratedSnapshot = parseLegacyPublishedStandingsSnapshot(
+    parseStoredSnapshot(legacySnapshot),
+    validatedTourId,
+  );
+
+  if (migratedSnapshot === null) {
+    return null;
+  }
+
+  await store.save(migratedSnapshot);
+
+  return migratedSnapshot;
 }
 
-export async function savePublishedStandings(input: SavePublishedStandingsInput) {
-  const tour1 = validateTourResults(input.tour1, "tour1");
-  const tour2 = validateTourResults(input.tour2, "tour2");
+export async function savePublishedTourStandings(
+  input: SavePublishedTourStandingsInput,
+) {
+  const tourId = validateTourId(input.tourId);
+  const rows = validateTourResults(input.rows, "rows");
   const qualificationCutoff = validateQualificationCutoff(
     input.qualificationCutoff,
   );
-  const snapshot: PublishedStandingsSnapshot = {
-    tour1,
-    tour2,
-    combinedRankings: buildCombinedRankings(tour1, tour2, qualificationCutoff),
+  const disqualifications = validateDisqualifications(input.disqualifications);
+  const snapshot: PublishedTourStandingsSnapshot = {
+    tourId,
+    rows,
+    rankedRows: buildTourStandings({
+      rows,
+      qualificationCutoff,
+      disqualifications,
+    }),
     qualificationCutoff,
+    disqualifications,
     source: validateSource(input.source),
     updatedAt: new Date().toISOString(),
   };
 
-  await getPublishedStandingsStore().save(snapshot);
+  await getPublishedTourStandingsStore(tourId).save(snapshot);
 
   return snapshot;
 }
@@ -117,14 +153,20 @@ export function resetStandingsStoreForTests() {
   redisClientOverride = null;
 }
 
-function getPublishedStandingsStore() {
+function getPublishedTourStandingsStore(tourId: TourId) {
   const redisConfig = getRedisConfig();
 
   if (redisConfig) {
     return {
-      read: () => getRedisClient(redisConfig).get(PUBLISHED_STANDINGS_REDIS_KEY),
-      save: (snapshot: PublishedStandingsSnapshot) =>
-        getRedisClient(redisConfig).set(PUBLISHED_STANDINGS_REDIS_KEY, snapshot),
+      read: () =>
+        getRedisClient(redisConfig).get(TOUR_STANDINGS_REDIS_KEYS[tourId]),
+      readLegacy: () =>
+        getRedisClient(redisConfig).get(LEGACY_PUBLISHED_STANDINGS_REDIS_KEY),
+      save: (snapshot: PublishedTourStandingsSnapshot) =>
+        getRedisClient(redisConfig).set(
+          TOUR_STANDINGS_REDIS_KEYS[tourId],
+          snapshot,
+        ),
     };
   }
 
@@ -135,8 +177,10 @@ function getPublishedStandingsStore() {
   }
 
   return {
-    read: readPublishedStandingsFromFile,
-    save: savePublishedStandingsToFile,
+    read: () => readPublishedTourStandingsFromFile(tourId),
+    readLegacy: readLegacyPublishedStandingsFromFile,
+    save: (snapshot: PublishedTourStandingsSnapshot) =>
+      savePublishedTourStandingsToFile(tourId, snapshot),
   };
 }
 
@@ -175,9 +219,11 @@ function getRedisClient(config: { url: string; token: string }) {
   return redisClient;
 }
 
-async function readPublishedStandingsFromFile() {
+async function readPublishedTourStandingsFromFile(tourId: TourId) {
+  const { readFile } = await import("node:fs/promises");
+
   try {
-    const snapshotText = await readFile(getPublishedStandingsPath(), "utf-8");
+    const snapshotText = await readFile(getTourStandingsPath(tourId), "utf-8");
     return JSON.parse(snapshotText) as unknown;
   } catch (error) {
     if (
@@ -193,39 +239,129 @@ async function readPublishedStandingsFromFile() {
   }
 }
 
-async function savePublishedStandingsToFile(
-  snapshot: PublishedStandingsSnapshot,
-) {
-  const snapshotPath = getPublishedStandingsPath();
+async function readLegacyPublishedStandingsFromFile() {
+  const { readFile } = await import("node:fs/promises");
 
-  await mkdir(path.dirname(snapshotPath), { recursive: true });
-  await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+  try {
+    const snapshotText = await readFile(getLegacyStandingsPath(), "utf-8");
+    return JSON.parse(snapshotText) as unknown;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return null;
+    }
+
+    throw error;
+  }
 }
 
-function parsePublishedStandingsSnapshot(value: unknown) {
+async function savePublishedTourStandingsToFile(
+  tourId: TourId,
+  snapshot: PublishedTourStandingsSnapshot,
+) {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+
+  await mkdir(getDataDirectory(), { recursive: true });
+  await writeFile(
+    getTourStandingsPath(tourId),
+    `${JSON.stringify(snapshot, null, 2)}\n`,
+  );
+}
+
+function parsePublishedTourStandingsSnapshot(value: unknown, tourId: TourId) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Published standings snapshot is invalid.");
   }
 
-  const snapshot = value as Partial<PublishedStandingsSnapshot>;
-  const tour1 = validateTourResults(snapshot.tour1, "tour1");
-  const tour2 = validateTourResults(snapshot.tour2, "tour2");
+  const snapshot = value as Partial<PublishedTourStandingsSnapshot>;
+  const rows = validateTourResults(snapshot.rows, "rows");
   const qualificationCutoff = validateQualificationCutoff(
     snapshot.qualificationCutoff,
   );
+  const disqualifications = validateDisqualifications(
+    snapshot.disqualifications,
+  );
   const source = validateSource(snapshot.source);
+
+  if (snapshot.tourId !== undefined && snapshot.tourId !== tourId) {
+    throw new Error("Published standings snapshot tourId does not match key.");
+  }
 
   if (typeof snapshot.updatedAt !== "string") {
     throw new Error("Published standings snapshot is missing updatedAt.");
   }
 
   return {
-    tour1,
-    tour2,
-    combinedRankings: buildCombinedRankings(tour1, tour2, qualificationCutoff),
+    tourId,
+    rows,
+    rankedRows: buildTourStandings({
+      rows,
+      qualificationCutoff,
+      disqualifications,
+    }),
     qualificationCutoff,
+    disqualifications,
     source,
     updatedAt: snapshot.updatedAt,
+  };
+}
+
+function parseLegacyPublishedStandingsSnapshot(value: unknown, tourId: TourId) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Legacy published standings snapshot is invalid.");
+  }
+
+  const snapshot = value as {
+    tour1?: unknown;
+    tour2?: unknown;
+    qualificationCutoff?: unknown;
+    disqualifications?: unknown;
+    source?: unknown;
+    updatedAt?: unknown;
+  };
+  const rawRows = tourId === "tour-1" ? snapshot.tour1 : snapshot.tour2;
+
+  if (rawRows === undefined) {
+    return null;
+  }
+
+  const rows = validateTourResults(
+    rawRows,
+    tourId === "tour-1" ? "tour1" : "tour2",
+  );
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const qualificationCutoff = validateQualificationCutoff(
+    snapshot.qualificationCutoff,
+  );
+  const disqualifications = validateDisqualifications(
+    snapshot.disqualifications,
+  );
+  const source = parseLegacySource(snapshot.source);
+  const updatedAt =
+    typeof snapshot.updatedAt === "string"
+      ? snapshot.updatedAt
+      : new Date().toISOString();
+
+  return {
+    tourId,
+    rows,
+    rankedRows: buildTourStandings({
+      rows,
+      qualificationCutoff,
+      disqualifications,
+    }),
+    qualificationCutoff,
+    disqualifications,
+    source,
+    updatedAt,
   };
 }
 
@@ -241,12 +377,28 @@ function parseStoredSnapshot(value: unknown) {
   }
 }
 
+function validateTourId(value: unknown): TourId {
+  if (value === "tour-1" || value === "tour-2") {
+    return value;
+  }
+
+  throw new Error("tourId must be tour-1 or tour-2.");
+}
+
 function validateSource(value: unknown): StandingsSource {
+  if (value === "manual" || value === "codeforces" || value === "legacy") {
+    return value;
+  }
+
+  throw new Error("Standings source must be manual, codeforces, or legacy.");
+}
+
+function parseLegacySource(value: unknown): StandingsSource {
   if (value === "manual" || value === "codeforces") {
     return value;
   }
 
-  throw new Error("Standings source must be manual or codeforces.");
+  return "legacy";
 }
 
 function validateQualificationCutoff(value: unknown): number {
@@ -261,7 +413,59 @@ function validateQualificationCutoff(value: unknown): number {
   return value;
 }
 
-function validateTourResults(value: unknown, field: "tour1" | "tour2") {
+function validateDisqualifications(value: unknown) {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error("disqualifications must be an array.");
+  }
+
+  const disqualifications: TourDisqualification[] = [];
+  const seenHandles = new Set<string>();
+
+  for (const [index, entry] of value.entries()) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`disqualifications row ${index + 1} must be an object.`);
+    }
+
+    const disqualification = entry as Partial<TourDisqualification>;
+
+    if (
+      typeof disqualification.handle !== "string" ||
+      disqualification.handle.trim().length === 0
+    ) {
+      throw new Error(`disqualifications row ${index + 1} handle is invalid.`);
+    }
+
+    if (
+      disqualification.reason !== undefined &&
+      typeof disqualification.reason !== "string"
+    ) {
+      throw new Error(`disqualifications row ${index + 1} reason is invalid.`);
+    }
+
+    const handle = disqualification.handle.trim();
+    const normalizedHandle = handle.toLowerCase();
+
+    if (seenHandles.has(normalizedHandle)) {
+      continue;
+    }
+
+    seenHandles.add(normalizedHandle);
+    disqualifications.push({
+      handle,
+      ...(disqualification.reason?.trim()
+        ? { reason: disqualification.reason.trim() }
+        : {}),
+    });
+  }
+
+  return disqualifications;
+}
+
+function validateTourResults(value: unknown, field: string) {
   if (!Array.isArray(value)) {
     throw new Error(`${field} must be an array.`);
   }
@@ -269,11 +473,7 @@ function validateTourResults(value: unknown, field: "tour1" | "tour2") {
   return value.map((row, index) => validateTourResult(row, field, index + 1));
 }
 
-function validateTourResult(
-  row: unknown,
-  field: "tour1" | "tour2",
-  rowNumber: number,
-) {
+function validateTourResult(row: unknown, field: string, rowNumber: number) {
   if (row === null || typeof row !== "object" || Array.isArray(row)) {
     throw new Error(`${field} row ${rowNumber} must be an object.`);
   }
@@ -308,6 +508,18 @@ function isValidScore(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function getPublishedStandingsPath() {
-  return PUBLISHED_STANDINGS_PATH;
+function formatTourLabel(tourId: TourId) {
+  return tourId === "tour-1" ? "Tour 1" : "Tour 2";
+}
+
+function getTourStandingsPath(tourId: TourId) {
+  return `${getDataDirectory()}/standings-${tourId}.json`;
+}
+
+function getLegacyStandingsPath() {
+  return `${getDataDirectory()}/published-standings.json`;
+}
+
+function getDataDirectory() {
+  return `${process.cwd()}/data`;
 }

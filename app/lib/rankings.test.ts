@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildCombinedRankings } from "./rankings";
+import { buildTourStandings } from "./rankings";
 
-test("merges official tour results and fills missing scores with zero", () => {
-  const rankings = buildCombinedRankings(
-    [
-      { handle: "alpha", score: 700, penalty: 90, official: true },
+test("builds official tour standings and filters unofficial rows", () => {
+  const rankings = buildTourStandings({
+    rows: [
+      { handle: " alpha ", score: 700, penalty: 90, official: true },
       { handle: "unofficial_user", score: 1200, penalty: 1, official: false },
-    ],
-    [
       { handle: "beta", score: 500, penalty: 70, official: true },
-      { handle: "alpha", score: 300, penalty: 30, official: true },
     ],
-  );
+  });
 
   assert.deepEqual(
     rankings.map((participant) => participant.handle),
@@ -23,30 +20,23 @@ test("merges official tour results and fills missing scores with zero", () => {
   assert.deepEqual(rankings[0], {
     rank: 1,
     handle: "alpha",
-    tour1Score: 700,
-    tour1Penalty: 90,
-    tour2Score: 300,
-    tour2Penalty: 30,
-    totalScore: 1000,
-    totalPenalty: 120,
+    score: 700,
+    penalty: 90,
     qualified: true,
+    disqualified: false,
     status: "Qualified",
   });
-
-  assert.equal(rankings[1].tour1Score, 0);
-  assert.equal(rankings[1].tour1Penalty, 0);
 });
 
 test("sorts by score, penalty, then handle", () => {
-  const rankings = buildCombinedRankings(
-    [
+  const rankings = buildTourStandings({
+    rows: [
       { handle: "zeta", score: 800, penalty: 40, official: true },
       { handle: "beta", score: 900, penalty: 90, official: true },
       { handle: "alpha", score: 900, penalty: 90, official: true },
       { handle: "gamma", score: 900, penalty: 80, official: true },
     ],
-    [],
-  );
+  });
 
   assert.deepEqual(
     rankings.map((participant) => participant.handle),
@@ -55,36 +45,123 @@ test("sorts by score, penalty, then handle", () => {
 });
 
 test("defaults to a top 20 qualification cutoff", () => {
-  const rankings = buildCombinedRankings(makeRankedTourResults(21), []);
+  const rankings = buildTourStandings({ rows: makeRankedTourResults(21) });
 
   assert.equal(rankings.filter((participant) => participant.qualified).length, 20);
   assert.equal(rankings[19].status, "Qualified");
   assert.equal(rankings[20].status, "Not qualified");
 });
 
-test("cutoff 30 qualifies the top 30", () => {
-  const rankings = buildCombinedRankings(makeRankedTourResults(31), [], 30);
+test("custom cutoff qualifies contestants within that rank", () => {
+  const rankings = buildTourStandings({
+    rows: makeRankedTourResults(31),
+    qualificationCutoff: 30,
+  });
 
   assert.equal(rankings.filter((participant) => participant.qualified).length, 30);
   assert.equal(rankings[29].status, "Qualified");
   assert.equal(rankings[30].status, "Not qualified");
 });
 
-test("cutoff 2 qualifies only the top 2", () => {
-  const rankings = buildCombinedRankings(
-    [
+test("disqualified contestant does not qualify and remains visible", () => {
+  const rankings = buildTourStandings({
+    rows: [
       { handle: "first", score: 300, penalty: 1, official: true },
       { handle: "second", score: 200, penalty: 1, official: true },
       { handle: "third", score: 100, penalty: 1, official: true },
     ],
-    [],
-    2,
-  );
+    qualificationCutoff: 2,
+    disqualifications: [{ handle: "second", reason: "Rule violation" }],
+  });
 
   assert.deepEqual(
-    rankings.map((participant) => participant.status),
-    ["Qualified", "Qualified", "Not qualified"],
+    rankings.map((participant) => participant.handle),
+    ["first", "second", "third"],
   );
+  assert.deepEqual(
+    rankings.map((participant) => participant.status),
+    ["Qualified", "Disqualified", "Not qualified"],
+  );
+  assert.equal(rankings.filter((participant) => participant.qualified).length, 1);
+  assert.equal(rankings[1].disqualificationReason, "Rule violation");
+});
+
+test("duplicate handle appears only once", () => {
+  const rankings = buildTourStandings({
+    rows: [
+      { handle: "tourist", score: 500, penalty: 100, official: true },
+      { handle: "tourist", score: 500, penalty: 100, official: true },
+    ],
+  });
+
+  assert.deepEqual(
+    rankings.map((participant) => participant.handle),
+    ["tourist"],
+  );
+});
+
+test("duplicate with better score wins", () => {
+  const rankings = buildTourStandings({
+    rows: [
+      { handle: "tourist", score: 400, penalty: 10, official: true },
+      { handle: "tourist", score: 500, penalty: 100, official: true },
+    ],
+  });
+
+  assert.equal(rankings.length, 1);
+  assert.equal(rankings[0].score, 500);
+  assert.equal(rankings[0].penalty, 100);
+});
+
+test("duplicate with same score and lower penalty wins", () => {
+  const rankings = buildTourStandings({
+    rows: [
+      { handle: "tourist", score: 500, penalty: 100, official: true },
+      { handle: "tourist", score: 500, penalty: 80, official: true },
+    ],
+  });
+
+  assert.equal(rankings.length, 1);
+  assert.equal(rankings[0].score, 500);
+  assert.equal(rankings[0].penalty, 80);
+});
+
+test("duplicate casing and spacing is treated as same contestant", () => {
+  const rankings = buildTourStandings({
+    rows: [
+      { handle: " tourist ", score: 500, penalty: 100, official: true },
+      { handle: "Tourist", score: 500, penalty: 100, official: true },
+    ],
+  });
+
+  assert.deepEqual(rankings, [
+    {
+      rank: 1,
+      handle: "tourist",
+      score: 500,
+      penalty: 100,
+      qualified: true,
+      disqualified: false,
+      status: "Qualified",
+    },
+  ]);
+});
+
+test("duplicates do not consume multiple qualification slots", () => {
+  const rankings = buildTourStandings({
+    rows: [
+      { handle: "first", score: 300, penalty: 1, official: true },
+      { handle: "first", score: 300, penalty: 1, official: true },
+      { handle: "second", score: 200, penalty: 1, official: true },
+    ],
+    qualificationCutoff: 2,
+  });
+
+  assert.deepEqual(
+    rankings.map((participant) => participant.handle),
+    ["first", "second"],
+  );
+  assert.equal(rankings.filter((participant) => participant.qualified).length, 2);
 });
 
 function makeRankedTourResults(count: number) {

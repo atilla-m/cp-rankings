@@ -1,10 +1,18 @@
-import { getPublishedStandingsResponse } from "@/app/lib/standings-store";
+import { getPublishedTourStandingsResponse } from "@/app/lib/standings-store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    return Response.json(await getPublishedStandingsResponse());
+    const [tour1, tour2] = await Promise.all([
+      getPublishedTourStandingsResponse("tour-1"),
+      getPublishedTourStandingsResponse("tour-2"),
+    ]);
+
+    return Response.json({
+      tour1,
+      tour2,
+    });
   } catch (error) {
     return Response.json(
       {
