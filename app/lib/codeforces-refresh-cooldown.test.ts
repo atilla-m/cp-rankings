@@ -307,6 +307,77 @@ test("group-html mode uses admin-provided group code and contest IDs", async () 
   });
 });
 
+test("group-html mode works without API credentials when manager mode is on", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv(
+      {
+        asManager: "true",
+        fetchMode: "group-html",
+      },
+      async () => {
+        const requestedUrls: string[] = [];
+
+        await withMockFetch(async (input) => {
+          requestedUrls.push(String(input));
+
+          return codeforcesGroupHtmlSuccessResponse();
+        }, async () => {
+          const response = await postCodeforcesStandings(
+            adminRequest({
+              groupCode: "admin-group",
+              tour1ContestId: 111111,
+              tour2ContestId: 222222,
+            }),
+          );
+
+          assert.equal(response.status, 200);
+        });
+
+        assert.equal(requestedUrls.length, 2);
+        assert.equal(
+          requestedUrls.every((url) =>
+            url.includes("/standings/groupmates/true"),
+          ),
+          true,
+        );
+      },
+    );
+  });
+});
+
+test("group-html mode does not validate API credentials", async () => {
+  await withMockRedisCooldown(async () => {
+    await withCodeforcesRouteEnv(
+      {
+        apiKey: "key",
+        asManager: "true",
+        fetchMode: "group-html",
+      },
+      async () => {
+        let fetchCount = 0;
+
+        await withMockFetch(async () => {
+          fetchCount += 1;
+
+          return codeforcesGroupHtmlSuccessResponse();
+        }, async () => {
+          const response = await postCodeforcesStandings(
+            adminRequest({
+              groupCode: "admin-group",
+              tour1ContestId: 111111,
+              tour2ContestId: 222222,
+            }),
+          );
+
+          assert.equal(response.status, 200);
+        });
+
+        assert.equal(fetchCount, 2);
+      },
+    );
+  });
+});
+
 test("group-html mode does not call public contest standings first", async () => {
   await withMockRedisCooldown(async () => {
     await withCodeforcesRouteEnv({ fetchMode: "group-html" }, async () => {

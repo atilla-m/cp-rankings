@@ -38,29 +38,27 @@ async function loadCodeforcesStandings(
   try {
     assertAdminRequest(request);
 
-    const asManager = readBooleanEnv("CF_AS_MANAGER");
-    const credentials = readCodeforcesCredentials(asManager);
     const config = requireCompleteCodeforcesConfig(
       requestConfig
         ? getEffectiveRequestConfig(requestConfig)
         : await readCodeforcesConfig(),
     );
+    const apiFetchOptions =
+      config.fetchMode === "api" ? readCodeforcesApiFetchOptions() : undefined;
 
     await acquireCodeforcesRefreshCooldown();
 
     const tour1 = await fetchConfiguredContestStandings({
-      asManager,
+      apiFetchOptions,
       config,
-      credentials,
       contestId: config.tour1ContestId,
     });
 
     await sleep(2000);
 
     const tour2 = await fetchConfiguredContestStandings({
-      asManager,
+      apiFetchOptions,
       config,
-      credentials,
       contestId: config.tour2ContestId,
     });
 
@@ -84,15 +82,13 @@ function getEffectiveRequestConfig(requestConfig: CodeforcesConfig) {
 }
 
 async function fetchConfiguredContestStandings({
-  asManager,
+  apiFetchOptions,
   config,
   contestId,
-  credentials,
 }: {
-  asManager: boolean;
+  apiFetchOptions?: CodeforcesApiFetchOptions;
   config: ReturnType<typeof requireCompleteCodeforcesConfig>;
   contestId: number;
-  credentials?: ReturnType<typeof readCodeforcesCredentials>;
 }) {
   if (config.fetchMode === "group-html") {
     return fetchCodeforcesGroupHtmlStandings({
@@ -101,9 +97,13 @@ async function fetchConfiguredContestStandings({
     });
   }
 
+  if (!apiFetchOptions) {
+    throw new Error("Codeforces API fetch options are missing.");
+  }
+
   return fetchContestStandings(contestId, {
-    asManager,
-    credentials,
+    asManager: apiFetchOptions.asManager,
+    credentials: apiFetchOptions.credentials,
   });
 }
 
@@ -139,6 +139,20 @@ function readOptionalEnv(name: string) {
 
 function readBooleanEnv(name: string) {
   return readOptionalEnv(name)?.toLowerCase() === "true";
+}
+
+type CodeforcesApiFetchOptions = {
+  asManager: boolean;
+  credentials?: ReturnType<typeof readCodeforcesCredentials>;
+};
+
+function readCodeforcesApiFetchOptions(): CodeforcesApiFetchOptions {
+  const asManager = readBooleanEnv("CF_AS_MANAGER");
+
+  return {
+    asManager,
+    credentials: readCodeforcesCredentials(asManager),
+  };
 }
 
 function readCodeforcesCredentials(asManager: boolean) {
