@@ -13,6 +13,7 @@ import {
   validateCodeforcesConfigInput,
   type CodeforcesConfig,
 } from "@/app/lib/codeforces-config-store";
+import { readCodeforcesGroupHtmlFixtureStandings } from "@/app/lib/codeforces-fixture-html";
 import { fetchCodeforcesGroupHtmlStandings } from "@/app/lib/codeforces-group-html";
 
 export const runtime = "nodejs";
@@ -46,6 +47,20 @@ async function loadCodeforcesStandings(
     const apiFetchOptions =
       config.fetchMode === "api" ? readCodeforcesApiFetchOptions() : undefined;
 
+    if (config.fetchMode === "fixture-html") {
+      const fixtureStandings = await fetchConfiguredContestStandings({
+        apiFetchOptions,
+        config,
+        contestId: null,
+      });
+
+      return Response.json({
+        fetchMode: config.fetchMode,
+        tour1: fixtureStandings,
+        tour2: fixtureStandings,
+      });
+    }
+
     await acquireCodeforcesRefreshCooldown();
 
     const tour1 = await fetchConfiguredContestStandings({
@@ -63,6 +78,7 @@ async function loadCodeforcesStandings(
     });
 
     return Response.json({
+      fetchMode: config.fetchMode,
       tour1,
       tour2,
     });
@@ -88,11 +104,17 @@ async function fetchConfiguredContestStandings({
 }: {
   apiFetchOptions?: CodeforcesApiFetchOptions;
   config: ReturnType<typeof requireCompleteCodeforcesConfig>;
-  contestId: number;
+  contestId: number | null;
 }) {
+  if (config.fetchMode === "fixture-html") {
+    return readCodeforcesGroupHtmlFixtureStandings();
+  }
+
+  const configuredContestId = requireConfiguredContestId(contestId);
+
   if (config.fetchMode === "group-html") {
     return fetchCodeforcesGroupHtmlStandings({
-      contestId,
+      contestId: configuredContestId,
       groupCode: config.groupCode,
     });
   }
@@ -101,10 +123,18 @@ async function fetchConfiguredContestStandings({
     throw new Error("Codeforces API fetch options are missing.");
   }
 
-  return fetchContestStandings(contestId, {
+  return fetchContestStandings(configuredContestId, {
     asManager: apiFetchOptions.asManager,
     credentials: apiFetchOptions.credentials,
   });
+}
+
+function requireConfiguredContestId(contestId: number | null) {
+  if (contestId === null) {
+    throw new Error("Codeforces contest ID is missing.");
+  }
+
+  return contestId;
 }
 
 async function readRequestConfig(request: Request) {

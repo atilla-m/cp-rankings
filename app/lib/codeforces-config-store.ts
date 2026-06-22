@@ -17,7 +17,21 @@ export type CodeforcesConfig = {
   tour2ContestId: number | null;
 };
 
-export type CodeforcesFetchMode = "api" | "group-html";
+export type CodeforcesFetchMode = "api" | "group-html" | "fixture-html";
+
+export type CompleteCodeforcesConfig =
+  | {
+      groupCode: string;
+      tour1ContestId: number;
+      tour2ContestId: number;
+      fetchMode: "api" | "group-html";
+    }
+  | {
+      groupCode: string;
+      tour1ContestId: number | null;
+      tour2ContestId: number | null;
+      fetchMode: "fixture-html";
+    };
 
 export type StoredCodeforcesConfig = CodeforcesConfig & {
   updatedAt: string;
@@ -68,8 +82,20 @@ export function validateCodeforcesConfigInput(
   };
 }
 
-export function requireCompleteCodeforcesConfig(input: CodeforcesConfig) {
+export function requireCompleteCodeforcesConfig(
+  input: CodeforcesConfig,
+): CompleteCodeforcesConfig {
   const fetchMode = readCodeforcesFetchMode();
+
+  if (fetchMode === "fixture-html") {
+    return {
+      groupCode: input.groupCode,
+      tour1ContestId: input.tour1ContestId,
+      tour2ContestId: input.tour2ContestId,
+      fetchMode,
+    };
+  }
+
   const tour1ContestId = requireContestId(
     input.tour1ContestId,
     "Tour 1 contest ID",
@@ -288,9 +314,13 @@ function requireContestId(value: number | null, label: string) {
 }
 
 export function readCodeforcesFetchMode(): CodeforcesFetchMode {
-  return process.env.CF_FETCH_MODE?.trim().toLowerCase() === "group-html"
-    ? "group-html"
-    : "api";
+  const fetchMode = process.env.CF_FETCH_MODE?.trim().toLowerCase();
+
+  if (fetchMode === "group-html" || fetchMode === "fixture-html") {
+    return fetchMode;
+  }
+
+  return "api";
 }
 
 function getCodeforcesConfigPath() {

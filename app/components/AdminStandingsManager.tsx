@@ -2,6 +2,7 @@
 
 import { useRef, useState, type ChangeEvent } from "react";
 import { RankingsView } from "@/app/components/RankingsView";
+import type { CodeforcesFetchMode } from "@/app/lib/codeforces-config-store";
 import { parseStandingsImport } from "@/app/lib/import-standings";
 import {
   buildTourStandings,
@@ -24,6 +25,7 @@ type ApiErrorResponse = {
 
 type CodeforcesStandingsResponse =
   | {
+      fetchMode: CodeforcesFetchMode;
       tour1: TourResult[];
       tour2: TourResult[];
     }
@@ -40,6 +42,7 @@ type CodeforcesConfigResponse =
       config: CodeforcesConfig & {
         updatedAt?: string;
       };
+      fetchMode?: CodeforcesFetchMode;
     }
   | ApiErrorResponse;
 
@@ -92,6 +95,8 @@ export function AdminStandingsManager() {
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [loadingCodeforces, setLoadingCodeforces] = useState(false);
+  const [codeforcesFetchMode, setCodeforcesFetchMode] =
+    useState<CodeforcesFetchMode>("api");
   const [savingCodeforcesConfig, setSavingCodeforcesConfig] = useState(false);
   const [savingTourId, setSavingTourId] = useState<TourId | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -196,6 +201,7 @@ export function AdminStandingsManager() {
     }
 
     applyCodeforcesConfig(payload.config);
+    setCodeforcesFetchMode(payload.fetchMode ?? "api");
   }
 
   async function saveCodeforcesConfig() {
@@ -224,6 +230,7 @@ export function AdminStandingsManager() {
       }
 
       applyCodeforcesConfig(payload.config);
+      setCodeforcesFetchMode(payload.fetchMode ?? "api");
       setStatusMessage("Codeforces config saved.");
     } catch (error) {
       setLoadErrorMessage(
@@ -339,7 +346,13 @@ export function AdminStandingsManager() {
       setDraftStatus("valid");
       setLoadErrorMessage(null);
       setSaveErrorMessage(null);
-      setStatusMessage("Codeforces standings loaded into preview.");
+      setStatusMessage(
+        formatCodeforcesLoadStatusMessage(
+          payload.fetchMode,
+          payload.tour1.length,
+          payload.tour2.length,
+        ),
+      );
     } catch (error) {
       if (!isActiveCodeforcesRequest(requestId)) {
         return;
@@ -378,6 +391,8 @@ export function AdminStandingsManager() {
       );
     }
 
+    setCodeforcesFetchMode(payload.fetchMode ?? "api");
+
     return payload.config;
   }
 
@@ -403,13 +418,16 @@ export function AdminStandingsManager() {
   }
 
   function getCodeforcesConfigPayload(): CodeforcesConfig {
+    const allowEmptyContestIds = codeforcesFetchMode === "fixture-html";
     const tour1ContestId = parseContestIdText(
       codeforcesTour1ContestId,
       "Tour 1 contest ID",
+      allowEmptyContestIds,
     );
     const tour2ContestId = parseContestIdText(
       codeforcesTour2ContestId,
       "Tour 2 contest ID",
+      allowEmptyContestIds,
     );
 
     return {
@@ -878,8 +896,16 @@ function parseQualificationCutoff(value: string) {
     : null;
 }
 
-function parseContestIdText(value: string, label: string) {
+function parseContestIdText(
+  value: string,
+  label: string,
+  allowEmpty = false,
+) {
   const trimmedValue = value.trim();
+
+  if (allowEmpty && trimmedValue.length === 0) {
+    return null;
+  }
 
   if (!/^\d+$/.test(trimmedValue)) {
     throw new Error(`${label} is required and must be a positive integer.`);
@@ -892,6 +918,18 @@ function parseContestIdText(value: string, label: string) {
   }
 
   return parsedValue;
+}
+
+export function formatCodeforcesLoadStatusMessage(
+  fetchMode: CodeforcesFetchMode,
+  tour1RowCount: number,
+  tour2RowCount: number,
+) {
+  if (fetchMode === "fixture-html") {
+    return `Fixture standings loaded: Tour 1 has ${tour1RowCount} rows, Tour 2 has ${tour2RowCount} rows.`;
+  }
+
+  return "Codeforces standings loaded into preview.";
 }
 
 function parseDisqualifications(

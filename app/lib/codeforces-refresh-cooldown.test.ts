@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { formatCodeforcesLoadStatusMessage } from "@/app/components/AdminStandingsManager";
 import { GET as getCodeforcesStandings } from "@/app/api/codeforces/standings/route";
 import { POST as postCodeforcesStandings } from "@/app/api/codeforces/standings/route";
+import { readCodeforcesGroupHtmlFixture } from "./codeforces-fixture-html";
+import { codeforcesGroupHtmlToTourResults } from "./codeforces-group-html";
 import {
   resetCodeforcesConfigStoreForTests,
   setCodeforcesConfigRedisClientForTests,
@@ -440,6 +443,119 @@ test("group-html mode requires a group code before fetching", async () => {
   });
 });
 
+test("fixture-html mode loads rows without external fetch", async () => {
+  await withCodeforcesRouteEnv({ fetchMode: "fixture-html" }, async () => {
+    let fetchCount = 0;
+
+    await withMockFetch(async () => {
+      fetchCount += 1;
+      throw new Error("fixture-html mode must not call fetch.");
+    }, async () => {
+      const response = await postCodeforcesStandings(
+        adminRequest({
+          groupCode: "",
+          tour1ContestId: null,
+          tour2ContestId: null,
+        }),
+      );
+      const body = (await response.json()) as CodeforcesStandingsSuccessBody;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.fetchMode, "fixture-html");
+      assert.equal(fetchCount, 0);
+      assert.deepEqual(body.tour1, [
+        { handle: "tooourist", score: 3, penalty: 48, official: true },
+        { handle: "Ekber_Ekber", score: 2, penalty: 25, official: true },
+        { handle: "Yusif_Nazarli", score: 2, penalty: 132, official: true },
+        { handle: "Osman_112", score: 0, penalty: 0, official: true },
+      ]);
+      assert.deepEqual(body.tour2, body.tour1);
+    });
+  });
+});
+
+test("fixture-html mode uses the group-html parser", async () => {
+  await withCodeforcesRouteEnv({ fetchMode: "fixture-html" }, async () => {
+    const expectedRows = codeforcesGroupHtmlToTourResults(
+      await readCodeforcesGroupHtmlFixture(),
+    );
+
+    await withMockFetch(async () => {
+      throw new Error("fixture-html mode must not call fetch.");
+    }, async () => {
+      const response = await postCodeforcesStandings(
+        adminRequest({
+          groupCode: "",
+          tour1ContestId: null,
+          tour2ContestId: null,
+        }),
+      );
+      const body = (await response.json()) as CodeforcesStandingsSuccessBody;
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body.tour1, expectedRows);
+      assert.deepEqual(body.tour2, expectedRows);
+    });
+  });
+});
+
+test("fixture-html mode does not validate Codeforces API credentials", async () => {
+  await withCodeforcesRouteEnv(
+    {
+      apiKey: "key",
+      asManager: "true",
+      fetchMode: "fixture-html",
+    },
+    async () => {
+      await withMockFetch(async () => {
+        throw new Error("fixture-html mode must not call fetch.");
+      }, async () => {
+        const response = await postCodeforcesStandings(
+          adminRequest({
+            groupCode: "",
+            tour1ContestId: null,
+            tour2ContestId: null,
+          }),
+        );
+        const body = (await response.json()) as CodeforcesStandingsSuccessBody;
+
+        assert.equal(response.status, 200);
+        assert.equal(body.fetchMode, "fixture-html");
+        assert.equal(body.tour1.length, 4);
+      });
+    },
+  );
+});
+
+test("admin preview receives non-empty fixture-html rows", async () => {
+  await withCodeforcesRouteEnv({ fetchMode: "fixture-html" }, async () => {
+    await withMockFetch(async () => {
+      throw new Error("fixture-html mode must not call fetch.");
+    }, async () => {
+      const response = await postCodeforcesStandings(
+        adminRequest({
+          groupCode: "",
+          tour1ContestId: null,
+          tour2ContestId: null,
+        }),
+      );
+      const body = (await response.json()) as CodeforcesStandingsSuccessBody;
+
+      assert.equal(response.status, 200);
+      assert.ok(body.tour1.length > 0);
+      assert.ok(body.tour2.length > 0);
+      assert.equal(
+        formatCodeforcesLoadStatusMessage(
+          body.fetchMode,
+          body.tour1.length,
+          body.tour2.length,
+        ),
+        "Fixture standings loaded: Tour 1 has 4 rows, Tour 2 has 4 rows.",
+      );
+    });
+  });
+});
+
 test("invalid admin-provided contest ID is rejected before fetching", async () => {
   await withMockRedisCooldown(async () => {
     await withCodeforcesRouteEnv({}, async () => {
@@ -486,6 +602,22 @@ type CodeforcesRouteEnvOptions = {
 };
 
 type EnvOverrides = Record<string, string | undefined>;
+
+type CodeforcesStandingsSuccessBody = {
+  fetchMode: "api" | "group-html" | "fixture-html";
+  tour1: Array<{
+    handle: string;
+    score: number;
+    penalty: number;
+    official: boolean;
+  }>;
+  tour2: Array<{
+    handle: string;
+    score: number;
+    penalty: number;
+    official: boolean;
+  }>;
+};
 
 class MockCooldownRedisClient {
   private expiresAt = 0;

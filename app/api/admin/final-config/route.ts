@@ -1,9 +1,8 @@
 import { assertAdminRequest } from "@/app/lib/admin-auth";
 import {
-  readCodeforcesConfig,
-  readCodeforcesFetchMode,
-  saveCodeforcesConfig,
-} from "@/app/lib/codeforces-config-store";
+  readFinalLeaderboardConfig,
+  saveFinalLeaderboardConfig,
+} from "@/app/lib/final-leaderboard-store";
 
 export const runtime = "nodejs";
 
@@ -12,8 +11,7 @@ export async function GET(request: Request) {
     assertAdminRequest(request);
 
     return Response.json({
-      config: await readCodeforcesConfig(),
-      fetchMode: readCodeforcesFetchMode(),
+      config: await readFinalLeaderboardConfig(),
     });
   } catch (error) {
     return Response.json(
@@ -21,7 +19,7 @@ export async function GET(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Unable to load Codeforces config.",
+            : "Unable to load final config.",
       },
       {
         status: 400,
@@ -35,22 +33,16 @@ export async function POST(request: Request) {
     assertAdminRequest(request);
 
     const body = (await request.json()) as unknown;
+    const result = await saveFinalLeaderboardConfig(body);
 
-    if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      throw new Error("Codeforces config payload is invalid.");
-    }
-
-    return Response.json({
-      config: await saveCodeforcesConfig(body),
-      fetchMode: readCodeforcesFetchMode(),
-    });
+    return Response.json(result);
   } catch (error) {
     return Response.json(
       {
         error:
           error instanceof Error
             ? error.message
-            : "Unable to save Codeforces config.",
+            : "Unable to save final config.",
       },
       {
         status: 400,
