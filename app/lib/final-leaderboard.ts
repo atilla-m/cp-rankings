@@ -48,6 +48,13 @@ export type SaveFinalLeaderboardConfigInput = {
   problems?: unknown;
 };
 
+type ManualSubmissionInput = {
+  handle?: unknown;
+  participantHandle?: unknown;
+  problemId?: unknown;
+  acceptedAt?: unknown;
+};
+
 const collator = new Intl.Collator("en", {
   numeric: true,
   sensitivity: "base",
@@ -248,6 +255,48 @@ export function getDefaultFinalLeaderboardConfig(): FinalLeaderboardConfig {
   };
 }
 
+export function parseFinalParticipantsInput(input: string): FinalParticipant[] {
+  const trimmedInput = input.trim();
+
+  if (trimmedInput.length === 0) {
+    throw new Error("Final participants input is required.");
+  }
+
+  const participants = trimmedInput.startsWith("[")
+    ? parseFinalParticipantsJson(trimmedInput)
+    : parseFinalParticipantsCsv(trimmedInput);
+
+  if (participants.length === 0) {
+    throw new Error("At least one final participant is required.");
+  }
+
+  return participants;
+}
+
+export function parseFinalAcceptedSubmissionsInput(
+  input: string,
+  config: FinalLeaderboardConfig,
+): FinalAcceptedSubmission[] {
+  const trimmedInput = input.trim();
+
+  if (trimmedInput.length === 0) {
+    throw new Error("Final accepted submissions input is required.");
+  }
+
+  const validProblemIds = new Set(
+    config.problems.map((problem) => problem.id.trim()),
+  );
+  const submissions = trimmedInput.startsWith("[")
+    ? parseFinalAcceptedSubmissionsJson(trimmedInput, validProblemIds)
+    : parseFinalAcceptedSubmissionsCsv(trimmedInput, validProblemIds);
+
+  if (submissions.length === 0) {
+    throw new Error("At least one final accepted submission is required.");
+  }
+
+  return submissions;
+}
+
 function getFirstAcceptedSubmissions(
   acceptedSubmissions: FinalAcceptedSubmission[],
   participantByKey: Map<string, FinalParticipant>,
@@ -422,6 +471,226 @@ function parseRequiredNonNegativeNumber(value: unknown, label: string) {
   }
 
   return numericValue;
+}
+
+function parseFinalParticipantsJson(input: string): FinalParticipant[] {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(input) as unknown;
+  } catch {
+    throw new Error("Final participants JSON is invalid.");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Final participants JSON must be an array.");
+  }
+
+  return parsed.map((entry, index) => validateManualParticipant(entry, index));
+}
+
+function parseFinalParticipantsCsv(input: string): FinalParticipant[] {
+  const rows = parseCsvRecords(input, "Final participants");
+
+  return rows.map((row, index) => validateManualParticipant(row, index));
+}
+
+function validateManualParticipant(
+  entry: unknown,
+  index: number,
+): FinalParticipant {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error(`Final participant ${index + 1} must be an object.`);
+  }
+
+  const handle = (entry as Partial<FinalParticipant>).handle;
+
+  if (typeof handle !== "string" || handle.trim().length === 0) {
+    throw new Error(`Final participant ${index + 1} handle is required.`);
+  }
+
+  return {
+    handle: handle.trim(),
+  };
+}
+
+function parseFinalAcceptedSubmissionsJson(
+  input: string,
+  validProblemIds: Set<string>,
+): FinalAcceptedSubmission[] {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(input) as unknown;
+  } catch {
+    throw new Error("Final accepted submissions JSON is invalid.");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Final accepted submissions JSON must be an array.");
+  }
+
+  return parsed.map((entry, index) =>
+    validateManualAcceptedSubmission(entry, index, validProblemIds),
+  );
+}
+
+function parseFinalAcceptedSubmissionsCsv(
+  input: string,
+  validProblemIds: Set<string>,
+): FinalAcceptedSubmission[] {
+  const rows = parseCsvRecords(input, "Final accepted submissions");
+
+  return rows.map((row, index) =>
+    validateManualAcceptedSubmission(row, index, validProblemIds),
+  );
+}
+
+function validateManualAcceptedSubmission(
+  entry: unknown,
+  index: number,
+  validProblemIds: Set<string>,
+): FinalAcceptedSubmission {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error(`Final submission ${index + 1} must be an object.`);
+  }
+
+  const submission = entry as ManualSubmissionInput;
+  const submissionRecord = entry as Record<string, unknown>;
+  const handle =
+    submission.handle ??
+    submission.participantHandle ??
+    submissionRecord.participanthandle;
+  const problemId = submission.problemId ?? submissionRecord.problemid;
+  const acceptedAt = submission.acceptedAt ?? submissionRecord.acceptedat;
+
+  if (typeof handle !== "string" || handle.trim().length === 0) {
+    throw new Error(`Final submission ${index + 1} handle is required.`);
+  }
+
+  if (
+    typeof problemId !== "string" ||
+    !validProblemIds.has(problemId.trim())
+  ) {
+    throw new Error(
+      `Final submission ${index + 1} problemId must match a configured final problem.`,
+    );
+  }
+
+  if (
+    typeof acceptedAt !== "string" ||
+    !isValidIsoDateTime(acceptedAt.trim())
+  ) {
+    throw new Error(
+      `Final submission ${index + 1} acceptedAt must be a valid ISO datetime.`,
+    );
+  }
+
+  return {
+    participantHandle: handle.trim(),
+    problemId: problemId.trim(),
+    acceptedAt: acceptedAt.trim(),
+  };
+}
+
+function parseCsvRecords(input: string, label: string) {
+  const lines = input
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length < 2) {
+    throw new Error(`${label} CSV must include a header row and data rows.`);
+  }
+
+  const headers = parseCsvLine(lines[0]).map((header) =>
+    header.trim().toLowerCase(),
+  );
+
+  if (headers.some((header) => header.length === 0)) {
+    throw new Error(`${label} CSV header is invalid.`);
+  }
+
+  return lines.slice(1).map((line, rowIndex) => {
+    const values = parseCsvLine(line);
+
+    if (values.length !== headers.length) {
+      throw new Error(`${label} CSV row ${rowIndex + 2} has invalid columns.`);
+    }
+
+    return Object.fromEntries(
+      headers.map((header, index) => [header, values[index].trim()]),
+    );
+  });
+}
+
+function parseCsvLine(line: string) {
+  const values: string[] = [];
+  let value = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+
+    if (character === "\"") {
+      if (inQuotes && line[index + 1] === "\"") {
+        value += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (character === "," && !inQuotes) {
+      values.push(value);
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+
+  if (inQuotes) {
+    throw new Error("CSV row has an unterminated quoted field.");
+  }
+
+  values.push(value);
+  return values;
+}
+
+function isValidIsoDateTime(value: string) {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+      value,
+    );
+
+  if (!match) {
+    return false;
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] =
+    match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > getDaysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    return false;
+  }
+
+  return Number.isFinite(Date.parse(value));
+}
+
+function getDaysInMonth(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function parseTime(value: string | null | undefined) {

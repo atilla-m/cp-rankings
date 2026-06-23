@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import {
   buildFinalLeaderboard,
+  parseFinalAcceptedSubmissionsInput,
+  parseFinalParticipantsInput,
   validateFinalLeaderboardConfigInput,
   type FinalLeaderboardConfig,
 } from "./final-leaderboard";
@@ -314,6 +316,103 @@ test("valid numeric strings still pass final config validation", () => {
   assert.equal(config.problems[0].initialScore, 750.5);
   assert.equal(config.problems[0].decreaseValue, 12.5);
   assert.equal(config.problems[0].minScore, 100.25);
+});
+
+test("valid final participant CSV parses", () => {
+  assert.deepEqual(
+    parseFinalParticipantsInput(`handle
+tooourist
+Ekber_Ekber`),
+    [{ handle: "tooourist" }, { handle: "Ekber_Ekber" }],
+  );
+});
+
+test("valid final submissions CSV parses", () => {
+  assert.deepEqual(
+    parseFinalAcceptedSubmissionsInput(
+      `handle,problemId,acceptedAt
+tooourist,A,2026-06-10T13:10:00Z
+Ekber_Ekber,A,2026-06-10T13:15:00Z`,
+      makeConfig(),
+    ),
+    [
+      {
+        participantHandle: "tooourist",
+        problemId: "A",
+        acceptedAt: "2026-06-10T13:10:00Z",
+      },
+      {
+        participantHandle: "Ekber_Ekber",
+        problemId: "A",
+        acceptedAt: "2026-06-10T13:15:00Z",
+      },
+    ],
+  );
+});
+
+test("manual final submissions reject unknown problemId", () => {
+  assert.throws(
+    () =>
+      parseFinalAcceptedSubmissionsInput(
+        `handle,problemId,acceptedAt
+tooourist,Z,2026-06-10T13:10:00Z`,
+        makeConfig(),
+      ),
+    /problemId must match a configured final problem/,
+  );
+});
+
+test("manual final submissions reject invalid acceptedAt", () => {
+  assert.throws(
+    () =>
+      parseFinalAcceptedSubmissionsInput(
+        `handle,problemId,acceptedAt
+tooourist,A,not-a-date`,
+        makeConfig(),
+      ),
+    /acceptedAt must be a valid ISO datetime/,
+  );
+});
+
+test("preview builds from manual final submissions", () => {
+  const config = makeConfig();
+  const participants = parseFinalParticipantsInput(`handle
+tooourist
+Ekber_Ekber`);
+  const acceptedSubmissions = parseFinalAcceptedSubmissionsInput(
+    `handle,problemId,acceptedAt
+tooourist,A,2026-06-21T10:10:00Z
+Ekber_Ekber,A,2026-06-21T10:15:00Z`,
+    config,
+  );
+  const leaderboard = buildFinalLeaderboard(
+    config,
+    participants,
+    acceptedSubmissions,
+  );
+
+  assert.deepEqual(
+    leaderboard.map((row) => ({
+      rank: row.rank,
+      handle: row.handle,
+      totalScore: row.totalScore,
+      totalPenalty: row.totalPenalty,
+    })),
+    [
+      {
+        rank: 1,
+        handle: "tooourist",
+        totalScore: 500,
+        totalPenalty: 10,
+      },
+      {
+        rank: 2,
+        handle: "Ekber_Ekber",
+        totalScore: 450,
+        totalPenalty: 15,
+      },
+    ],
+  );
 });
 
 function makeConfig(

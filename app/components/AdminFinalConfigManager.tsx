@@ -3,12 +3,13 @@
 import { useMemo, useState } from "react";
 import {
   buildFinalLeaderboard,
-  demoFinalAcceptedSubmissions,
-  demoFinalParticipants,
   getDefaultFinalLeaderboardConfig,
+  parseFinalAcceptedSubmissionsInput,
+  parseFinalParticipantsInput,
   validateFinalLeaderboardConfigInput,
   type FinalDecreaseType,
   type FinalLeaderboardConfig,
+  type FinalLeaderboardRow,
 } from "@/app/lib/final-leaderboard";
 
 type ApiErrorResponse = {
@@ -20,7 +21,13 @@ type FinalConfigResponse =
       config: FinalLeaderboardConfig & {
         updatedAt?: string;
       };
-      snapshot?: {
+    }
+  | ApiErrorResponse;
+
+type FinalLeaderboardPublishResponse =
+  | {
+      snapshot: {
+        rows: FinalLeaderboardRow[];
         updatedAt: string;
       };
     }
@@ -39,6 +46,14 @@ const numberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
+const defaultParticipantsInput = `handle
+tooourist
+Ekber_Ekber`;
+
+const defaultAcceptedSubmissionsInput = `handle,problemId,acceptedAt
+tooourist,A,2026-06-10T13:10:00Z
+Ekber_Ekber,A,2026-06-10T13:15:00Z`;
+
 export function AdminFinalConfigManager() {
   const defaultConfig = getDefaultFinalLeaderboardConfig();
   const [password, setPassword] = useState("");
@@ -55,6 +70,17 @@ export function AdminFinalConfigManager() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [buildingPreview, setBuildingPreview] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [participantsInput, setParticipantsInput] = useState(
+    defaultParticipantsInput,
+  );
+  const [acceptedSubmissionsInput, setAcceptedSubmissionsInput] = useState(
+    defaultAcceptedSubmissionsInput,
+  );
+  const [manualPreviewRows, setManualPreviewRows] = useState<
+    FinalLeaderboardRow[] | null
+  >(null);
 
   const parsedConfig = useMemo(() => {
     try {
@@ -72,13 +98,6 @@ export function AdminFinalConfigManager() {
       };
     }
   }, [contestStartTime, problems]);
-  const previewRows = parsedConfig.config
-    ? buildFinalLeaderboard(
-        parsedConfig.config,
-        demoFinalParticipants,
-        demoFinalAcceptedSubmissions,
-      )
-    : [];
   const displayedErrorMessage = errorMessage ?? parsedConfig.error;
 
   async function verifyPassword() {
@@ -154,14 +173,14 @@ export function AdminFinalConfigManager() {
       }
 
       applyConfig(payload.config);
-      const savedAt = payload.snapshot?.updatedAt ?? payload.config.updatedAt;
+      const savedAt = payload.config.updatedAt;
 
       setStatusMessage(
         savedAt
-          ? `Final config saved. Demo snapshot updated at ${new Date(
+          ? `Final config saved at ${new Date(
               savedAt,
             ).toLocaleString()}.`
-          : "Final config saved. Demo snapshot updated.",
+          : "Final config saved.",
       );
     } catch (error) {
       setErrorMessage(
@@ -175,6 +194,7 @@ export function AdminFinalConfigManager() {
   function applyConfig(config: FinalLeaderboardConfig) {
     setContestStartTime(config.contestStartTime ?? "");
     setProblems(config.problems.map(toDraftProblem));
+    setManualPreviewRows(null);
   }
 
   function updateProblem(
@@ -182,6 +202,7 @@ export function AdminFinalConfigManager() {
     field: keyof DraftProblem,
     value: string,
   ) {
+    setManualPreviewRows(null);
     setProblems((currentProblems) =>
       currentProblems.map((problem, problemIndex) =>
         problemIndex === index ? { ...problem, [field]: value } : problem,
@@ -193,6 +214,7 @@ export function AdminFinalConfigManager() {
     const nextIndex = problems.length;
     const nextId = String.fromCharCode("A".charCodeAt(0) + nextIndex);
 
+    setManualPreviewRows(null);
     setProblems((currentProblems) => [
       ...currentProblems,
       {
@@ -207,9 +229,106 @@ export function AdminFinalConfigManager() {
   }
 
   function removeProblem(index: number) {
+    setManualPreviewRows(null);
     setProblems((currentProblems) =>
       currentProblems.filter((_, problemIndex) => problemIndex !== index),
     );
+  }
+
+  function updateParticipantsInput(value: string) {
+    setParticipantsInput(value);
+    setManualPreviewRows(null);
+  }
+
+  function updateAcceptedSubmissionsInput(value: string) {
+    setAcceptedSubmissionsInput(value);
+    setManualPreviewRows(null);
+  }
+
+  function buildManualPreview() {
+    setBuildingPreview(true);
+    setErrorMessage(null);
+    setManualPreviewRows(null);
+
+    try {
+      if (!parsedConfig.config) {
+        throw new Error(parsedConfig.error ?? "Final configuration is invalid.");
+      }
+
+      const participants = parseFinalParticipantsInput(participantsInput);
+      const acceptedSubmissions = parseFinalAcceptedSubmissionsInput(
+        acceptedSubmissionsInput,
+        parsedConfig.config,
+      );
+      const rows = buildFinalLeaderboard(
+        parsedConfig.config,
+        participants,
+        acceptedSubmissions,
+      );
+
+      setManualPreviewRows(rows);
+      setStatusMessage("Final leaderboard preview built from manual data.");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to build final leaderboard preview.",
+      );
+    } finally {
+      setBuildingPreview(false);
+    }
+  }
+
+  async function publishFinalLeaderboard() {
+    if (!parsedConfig.config || manualPreviewRows === null) {
+      setErrorMessage("Build a final leaderboard preview before publishing.");
+      setManualPreviewRows(null);
+      return;
+    }
+
+    setPublishing(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await fetch("/api/admin/final-leaderboard", {
+        method: "POST",
+        headers: {
+          ...adminHeaders(password),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          config: parsedConfig.config,
+          participantsInput,
+          acceptedSubmissionsInput,
+        }),
+      });
+      const payload =
+        (await response.json()) as FinalLeaderboardPublishResponse;
+
+      if (!response.ok || "error" in payload) {
+        throw new Error(
+          "error" in payload
+            ? payload.error
+            : "Unable to publish final leaderboard.",
+        );
+      }
+
+      setManualPreviewRows(payload.snapshot.rows);
+      setStatusMessage(
+        `Final leaderboard published at ${new Date(
+          payload.snapshot.updatedAt,
+        ).toLocaleString()}.`,
+      );
+    } catch (error) {
+      setManualPreviewRows(null);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to publish final leaderboard.",
+      );
+    } finally {
+      setPublishing(false);
+    }
   }
 
   return (
@@ -259,7 +378,10 @@ export function AdminFinalConfigManager() {
                     placeholder="2026-06-21T10:00:00.000Z"
                     type="text"
                     value={contestStartTime}
-                    onChange={(event) => setContestStartTime(event.target.value)}
+                    onChange={(event) => {
+                      setContestStartTime(event.target.value);
+                      setManualPreviewRows(null);
+                    }}
                   />
                 </label>
 
@@ -378,35 +500,123 @@ export function AdminFinalConfigManager() {
                 <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
                   <div className="border-b border-slate-200 p-4">
                     <h3 className="text-sm font-semibold text-slate-950">
-                      Mock leaderboard preview
+                      Manual final data
                     </h3>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-                      <thead className="bg-slate-100 text-xs uppercase tracking-[0.08em] text-slate-600">
-                        <tr>
-                          <TableHead>Rank</TableHead>
-                          <TableHead>Handle</TableHead>
-                          <TableHead numeric>Total</TableHead>
-                          <TableHead numeric>Penalty</TableHead>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {previewRows.map((row) => (
-                          <tr key={row.handle}>
-                            <TableCell strong>#{row.rank}</TableCell>
-                            <TableCell>{row.handle}</TableCell>
-                            <TableCell numeric>
-                              {formatNumber(row.totalScore)}
-                            </TableCell>
-                            <TableCell numeric>
-                              {formatNumber(row.totalPenalty)}
-                            </TableCell>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="grid gap-4 p-4 lg:grid-cols-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                        Participants CSV or JSON
+                      </span>
+                      <textarea
+                        aria-label="Final participants CSV or JSON"
+                        className="min-h-36 rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+                        value={participantsInput}
+                        onChange={(event) =>
+                          updateParticipantsInput(event.target.value)
+                        }
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                        Accepted submissions CSV or JSON
+                      </span>
+                      <textarea
+                        aria-label="Final accepted submissions CSV or JSON"
+                        className="min-h-36 rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-950 outline-none transition focus:border-sky-600 focus:ring-2 focus:ring-sky-100"
+                        value={acceptedSubmissionsInput}
+                        onChange={(event) =>
+                          updateAcceptedSubmissionsInput(event.target.value)
+                        }
+                      />
+                    </label>
                   </div>
+                  <div className="flex flex-col gap-2 border-t border-slate-200 p-4 sm:flex-row">
+                    <button
+                      className="h-10 rounded-md border border-sky-700 bg-sky-700 px-4 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:border-sky-300 disabled:bg-sky-300"
+                      disabled={buildingPreview || parsedConfig.config === null}
+                      type="button"
+                      onClick={buildManualPreview}
+                    >
+                      {buildingPreview
+                        ? "Building preview"
+                        : "Build final leaderboard preview"}
+                    </button>
+                    <button
+                      className="h-10 rounded-md border border-emerald-700 bg-emerald-700 px-4 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border-emerald-300 disabled:bg-emerald-300"
+                      disabled={
+                        publishing ||
+                        parsedConfig.config === null ||
+                        manualPreviewRows === null
+                      }
+                      type="button"
+                      onClick={publishFinalLeaderboard}
+                    >
+                      {publishing
+                        ? "Publishing final leaderboard"
+                        : "Publish final leaderboard"}
+                    </button>
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+                  <div className="border-b border-slate-200 p-4">
+                    <h3 className="text-sm font-semibold text-slate-950">
+                      Final leaderboard preview
+                    </h3>
+                  </div>
+                  {manualPreviewRows && parsedConfig.config ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+                        <thead className="bg-slate-100 text-xs uppercase tracking-[0.08em] text-slate-600">
+                          <tr>
+                            <TableHead>Rank</TableHead>
+                            <TableHead>Handle</TableHead>
+                            {parsedConfig.config.problems.map((problem) => (
+                              <TableHead numeric key={problem.id}>
+                                {problem.id}
+                              </TableHead>
+                            ))}
+                            <TableHead numeric>Total</TableHead>
+                            <TableHead numeric>Penalty</TableHead>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {manualPreviewRows.map((row) => (
+                            <tr key={row.handle}>
+                              <TableCell strong>#{row.rank}</TableCell>
+                              <TableCell>{row.handle}</TableCell>
+                              {parsedConfig.config.problems.map((problem) => {
+                                const result = row.problemResults[problem.id];
+
+                                return (
+                                  <TableCell numeric key={problem.id}>
+                                    {result ? (
+                                      <span title={`Solve order ${result.solveOrder}`}>
+                                        {formatNumber(result.score)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400">-</span>
+                                    )}
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell numeric>
+                                {formatNumber(row.totalScore)}
+                              </TableCell>
+                              <TableCell numeric>
+                                {formatNumber(row.totalPenalty)}
+                              </TableCell>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="p-4 text-sm text-slate-500">
+                      Build a preview from manual final data before publishing.
+                    </div>
+                  )}
                 </section>
               </>
             ) : null}

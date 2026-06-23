@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  buildDemoFinalLeaderboardSnapshot,
   getFinalLeaderboardResponse,
   type FinalLeaderboardSnapshot,
 } from "@/app/lib/final-leaderboard-store";
@@ -13,11 +12,6 @@ const numberFormatter = new Intl.NumberFormat("en-US", {
 
 export default async function FinalPage() {
   const response = await getFinalLeaderboardResponse();
-  const snapshot =
-    response.status === "published"
-      ? response.snapshot
-      : buildDemoFinalLeaderboardSnapshot();
-  const isDemo = response.status === "empty" || snapshot.source === "mock";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-950 sm:px-6 lg:px-8">
@@ -28,26 +22,32 @@ export default async function FinalPage() {
               Final leaderboard
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-              {isDemo
-                ? "This page is currently using mock/demo final-tour data."
-                : "Live final-tour leaderboard snapshot."}
+              Latest published final-tour leaderboard snapshot.
             </p>
           </div>
 
-          <dl className="grid grid-cols-2 gap-2 text-sm sm:min-w-[24rem] sm:grid-cols-3">
-            <Stat label="Participants" value={snapshot.rows.length} />
-            <Stat label="Problems" value={snapshot.config.problems.length} />
-            <Stat label="Source" value={isDemo ? "Demo" : "Live"} />
-          </dl>
+          {response.status === "published" ? (
+            <dl className="grid grid-cols-2 gap-2 text-sm sm:min-w-[24rem] sm:grid-cols-3">
+              <Stat label="Participants" value={response.snapshot.rows.length} />
+              <Stat
+                label="Problems"
+                value={response.snapshot.config.problems.length}
+              />
+              <Stat
+                label="Source"
+                value={formatSourceLabel(response.snapshot.source)}
+              />
+            </dl>
+          ) : null}
         </header>
 
         {response.status === "empty" ? (
           <section className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">
             {response.message}
           </section>
-        ) : null}
-
-        <FinalLeaderboardTable snapshot={snapshot} />
+        ) : (
+          <FinalLeaderboardTable snapshot={response.snapshot} />
+        )}
 
         <Link className="text-sm font-semibold text-sky-700" href="/">
           Back to rankings home
@@ -168,4 +168,16 @@ function TableCell({
 
 function formatNumber(value: number) {
   return numberFormatter.format(value);
+}
+
+function formatSourceLabel(source: FinalLeaderboardSnapshot["source"]) {
+  if (source === "manual") {
+    return "Manual";
+  }
+
+  if (source === "live") {
+    return "Live";
+  }
+
+  return "Demo";
 }

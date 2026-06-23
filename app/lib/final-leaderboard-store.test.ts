@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import FinalPage from "../final/page";
 import {
   getFinalLeaderboardResponse,
+  publishManualFinalLeaderboardSnapshot,
   resetFinalLeaderboardStoreForTests,
   saveFinalLeaderboardConfig,
   setFinalLeaderboardRedisClientForTests,
@@ -20,7 +23,7 @@ test("returns empty response when final leaderboard has not started", async () =
   });
 });
 
-test("saves final config and mock leaderboard snapshot to Redis keys", async () => {
+test("saves final config without publishing final leaderboard", async () => {
   await withMockRedisStore(async (redis) => {
     const result = await saveFinalLeaderboardConfig({
       contestStartTime: "2026-06-21T10:00:00.000Z",
@@ -37,22 +40,80 @@ test("saves final config and mock leaderboard snapshot to Redis keys", async () 
     });
 
     assert.equal(result.config.problems[0].id, "A");
-    assert.equal(result.snapshot.source, "mock");
     assert.equal(
       (redis.peek("final:config") as StoredFinalLeaderboardConfig | null)
         ?.problems[0].id,
       "A",
     );
+    assert.equal(redis.peek("final:leaderboard"), null);
+    assert.equal((await getFinalLeaderboardResponse()).status, "empty");
+  });
+});
+
+test("publishes manual final leaderboard snapshot to Redis key", async () => {
+  await withMockRedisStore(async (redis) => {
+    const snapshot = await publishManualFinalLeaderboardSnapshot({
+      config: {
+        contestStartTime: "2026-06-21T10:00:00.000Z",
+        problems: [
+          {
+            id: "A",
+            name: "Problem A",
+            initialScore: 500,
+            decreaseType: "fixed",
+            decreaseValue: 50,
+            minScore: 100,
+          },
+        ],
+      },
+      participantsInput: `handle
+tooourist
+Ekber_Ekber`,
+      acceptedSubmissionsInput: `handle,problemId,acceptedAt
+tooourist,A,2026-06-21T10:10:00Z
+Ekber_Ekber,A,2026-06-21T10:15:00Z`,
+    });
+
+    assert.equal(snapshot.source, "manual");
+    assert.deepEqual(
+      snapshot.rows.map((row) => row.handle),
+      ["tooourist", "Ekber_Ekber"],
+    );
     assert.equal(
       (redis.peek("final:leaderboard") as FinalLeaderboardSnapshot | null)
         ?.source,
-      "mock",
+      "manual",
     );
-    assert.equal(
-      (redis.peek("final:leaderboard") as FinalLeaderboardSnapshot | null)?.rows
-        .length,
-      4,
-    );
+  });
+});
+
+test("published final leaderboard can be read from final page", async () => {
+  await withMockRedisStore(async () => {
+    await publishManualFinalLeaderboardSnapshot({
+      config: {
+        contestStartTime: "2026-06-21T10:00:00.000Z",
+        problems: [
+          {
+            id: "A",
+            name: "Problem A",
+            initialScore: 500,
+            decreaseType: "fixed",
+            decreaseValue: 50,
+            minScore: 100,
+          },
+        ],
+      },
+      participantsInput: `handle
+tooourist`,
+      acceptedSubmissionsInput: `handle,problemId,acceptedAt
+tooourist,A,2026-06-21T10:10:00Z`,
+    });
+
+    const markup = renderToStaticMarkup(await FinalPage());
+
+    assert.match(markup, /tooourist/);
+    assert.match(markup, /Manual/);
+    assert.doesNotMatch(markup, /Final leaderboard has not started yet/);
   });
 });
 

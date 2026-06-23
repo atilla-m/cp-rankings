@@ -4,6 +4,8 @@ import {
   demoFinalAcceptedSubmissions,
   demoFinalParticipants,
   getDefaultFinalLeaderboardConfig,
+  parseFinalAcceptedSubmissionsInput,
+  parseFinalParticipantsInput,
   validateFinalLeaderboardConfigInput,
   type FinalLeaderboardConfig,
   type FinalLeaderboardRow,
@@ -31,7 +33,7 @@ export type StoredFinalLeaderboardConfig = FinalLeaderboardConfig & {
 export type FinalLeaderboardSnapshot = {
   config: FinalLeaderboardConfig;
   rows: FinalLeaderboardRow[];
-  source: "mock" | "live";
+  source: "mock" | "manual" | "live";
   updatedAt: string;
 };
 
@@ -69,16 +71,50 @@ export async function saveFinalLeaderboardConfig(input: unknown) {
     ...config,
     updatedAt: new Date().toISOString(),
   };
-  const snapshot = buildMockFinalLeaderboardSnapshot(storedConfig);
   const store = getFinalLeaderboardStore();
 
   await store.saveConfig(storedConfig);
-  await store.saveLeaderboard(snapshot);
 
   return {
     config: storedConfig,
-    snapshot,
   };
+}
+
+export async function publishManualFinalLeaderboardSnapshot(input: unknown) {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Final leaderboard publish payload is invalid.");
+  }
+
+  const payload = input as {
+    config?: unknown;
+    participantsInput?: unknown;
+    acceptedSubmissionsInput?: unknown;
+  };
+  const config = validateFinalLeaderboardConfigInput(payload.config ?? {});
+
+  if (typeof payload.participantsInput !== "string") {
+    throw new Error("Final participants input is required.");
+  }
+
+  if (typeof payload.acceptedSubmissionsInput !== "string") {
+    throw new Error("Final accepted submissions input is required.");
+  }
+
+  const participants = parseFinalParticipantsInput(payload.participantsInput);
+  const acceptedSubmissions = parseFinalAcceptedSubmissionsInput(
+    payload.acceptedSubmissionsInput,
+    config,
+  );
+  const snapshot: FinalLeaderboardSnapshot = {
+    config,
+    rows: buildFinalLeaderboard(config, participants, acceptedSubmissions),
+    source: "manual",
+    updatedAt: new Date().toISOString(),
+  };
+
+  await getFinalLeaderboardStore().saveLeaderboard(snapshot);
+
+  return snapshot;
 }
 
 export async function readFinalLeaderboardSnapshot() {
@@ -94,7 +130,7 @@ export async function readFinalLeaderboardSnapshot() {
 export async function getFinalLeaderboardResponse(): Promise<FinalLeaderboardApiResponse> {
   const snapshot = await readFinalLeaderboardSnapshot();
 
-  if (!snapshot) {
+  if (!snapshot || snapshot.source === "mock") {
     return {
       status: "empty",
       message: "Final leaderboard has not started yet.",
@@ -315,7 +351,11 @@ function parseFinalLeaderboardSnapshot(value: unknown): FinalLeaderboardSnapshot
     throw new Error("Final leaderboard snapshot rows must be an array.");
   }
 
-  if (snapshot.source !== "mock" && snapshot.source !== "live") {
+  if (
+    snapshot.source !== "mock" &&
+    snapshot.source !== "manual" &&
+    snapshot.source !== "live"
+  ) {
     throw new Error("Final leaderboard snapshot source is invalid.");
   }
 
